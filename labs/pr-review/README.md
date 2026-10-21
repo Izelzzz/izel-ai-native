@@ -24,9 +24,11 @@
 
 ## 跑一轮
 
-1. 为每个 PR 分支建一个独立副本（如 `git worktree add`），只放 PR 分支，不放本分支。
-2. 每个 PR 交给一个全新上下文的 reviewer，提示只说「按 SKILL.md review 这个 PR」，不提示有埋的 bug。
-3. 按 `answer-key.md` 打分，结果写进它的 Results log，记录写进 `runs/v<N>/trace.md`。
+1. 改 skill 后先跑 `tools/check-leaks.sh skill/pr-review/SKILL.md`，扫描不通过不跑。
+2. 为每个 PR 分支建一个**独立 clone**（`git clone --single-branch --branch <PR 分支>`），不要用 `git worktree`：worktree 共用 `.git`，reviewer 能看到本分支和答案表。
+3. 每个 PR 交给一个全新上下文的 reviewer，提示只说「按 SKILL.md review 这个 PR」，不提示有埋的 bug。
+4. 盲评：把各版本的输出打乱、换成随机编号，交给不知道版本的打分 agent（最好换一个模型），按 `answer-key.md` 打分。每个 PR 每个版本至少跑 3 次再比较。
+5. 按 `answer-key.md` 打分，结果写进它的 Results log，记录写进 `runs/v<N>/trace.md`。
 
 被 review 的代码自带测试，在 `labs/pr-review/textkit/` 里运行：
 
