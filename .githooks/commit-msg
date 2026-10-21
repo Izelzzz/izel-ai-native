@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
 # Reject commit messages that don't follow <type>(<scope>): <summary>.
 set -euo pipefail
+. "$(dirname "$0")/lib/common.sh"
 
 msg_file="$1"
-subject="$(grep -v '^#' "$msg_file" | grep -m1 -v '^[[:space:]]*$' || true)"
-
-# Git writes these subjects itself (merge, revert, rebase --autosquash), so they can't follow our format.
-case "$subject" in
-  "Merge "* | "Revert \""* | "fixup! "* | "squash! "* | "amend! "*) exit 0 ;;
-esac
-
-exec "$(git rev-parse --show-toplevel)/scripts/validate-commit-msg.sh" "$msg_file"
+is_git_generated_subject "$(subject_of < "$msg_file")" && exit 0
+exec "$HOOK_LIB_DIR/validate-commit-msg.sh" "$msg_file"

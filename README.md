@@ -60,17 +60,41 @@ review 不在 GitHub 上跑，而是在本地或云端机器上，由 agent 执�
 5. 每个 PR、每个版本至少跑 3 次再比较，否则分不清改进和随机波动。
 6. 记录写进 `runs/`，分数写进 `answer-key.md`。
 
-## 提交规范
+## 提交规范与检查
 
-提交说明使用 `<type>(<scope>): <summary>`，例如 `docs(pr-review-lab): add run 4 results`。`type` 为 `feat`、`fix`、`refactor`、`docs`、`test`、`chore`、`perf`、`build`、`ci`，`scope` 可省略。`update`、`fix bug` 这类笼统的摘要会被拒绝。
+提交说明使用 `<type>(<scope>): <summary>`，例如 `docs(pr-review-lab): add run 4 results`。`type` 为 `feat`、`fix`、`refactor`、`docs`、`test`、`chore`、`perf`、`build`、`ci`，`scope` 可省略。`update`、`fix bug` 这类笼统的摘要会被拒绝。git 自己生成的 `Merge`、`Revert`、`fixup!`、`squash!` 直接放行。
 
-`.githooks/commit-msg` 会在提交时自动检查。clone 之后执行一次，启用仓库里的 hook：
+检查分两层：本地 git hook 让问题尽早暴露，CI 负责兜底。hook 可以用 `--no-verify` 跳过，也可能根本没装，所以规则以 CI 为准。
 
-    git config core.hooksPath .githooks
+### 本地 hook
 
-检查逻辑在 `scripts/validate-commit-msg.sh`，来自 [`izel-skill`](https://github.com/Izelzzz/izel-skill) 0.1.0 的 `team-git-workflow`。git 自己生成的 `Merge`、`Revert`、`fixup!`、`squash!` 提交说明会直接放行。
+clone 之后在任意分支执行一次（`.githooks/` 改动后也要重新执行）：
 
-只有 `main` 上有这个 hook。在其他分支上提交时，`.githooks/` 不存在，不会做检查。
+    git show main:scripts/install-hooks.sh | bash
+
+它把 `main` 的 `.githooks/` 装进 `.git/review-lab-hooks/`，所以对**所有分支**生效，切换分支也不会变。`test/` 分支是考题，不放 hook 文件。
+
+| hook | 时机 | 检查 |
+|---|---|---|
+| `commit-msg` | 每次提交 | 提交说明格式 |
+| `pre-commit` | 每次提交，只做几秒内的检查 | 空白错误和冲突标记；超过 1 MiB 的文件；`.env`、私钥等凭据文件；暂存内容里像密钥的字符串；在 `test/*` 上禁止提交答案表、`runs/`、`skill/`、`tools/`；在 `docs/*` 上改动 skill 时运行 `check-leaks.sh` |
+| `pre-push` | 推送前 | 拦截改写已发布历史的推送（force-push）；重新检查每个新提交的说明；推送的提交改动了 textkit 时跑它的测试 |
+
+确实要 force-push 时，需要点名分支：`ALLOW_FORCE_PUSH=<分支名> git push --force-with-lease ...`。故意写进代码的假密钥，在那一行加上 `secret-scan: allow`。
+
+提交说明检查来自 [`izel-skill`](https://github.com/Izelzzz/izel-skill) 0.1.0 的 `team-git-workflow`（`.githooks/lib/validate-commit-msg.sh`）。
+
+### CI
+
+`.github/workflows/checks.yml` 在推送到 `main`、PR、每天一次和手动触发时运行，检查**所有分支**：
+
+- 每个提交的说明格式
+- `test/*` 分支里没有答案文件
+- 当前 skill 没有写进题目答案
+- 每个 `test/*` 分支的 textkit 测试都通过
+- 用 gitleaks 扫描全部历史里的密钥
+
+push 触发的 workflow 用的是被推送分支自己的那份 workflow 文件，而 `test/*`、`docs/*` 分支里没有这个文件，所以由 `main` 定时检查全部分支。本地也可以跑同样的检查：`bash scripts/ci-checks.sh`。
 
 ## 目前进度
 

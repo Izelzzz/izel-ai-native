@@ -1,0 +1,45 @@
+name: checks
+
+# GitHub runs a push-triggered workflow from the pushed branch's own copy of this file.
+# test/* and docs/* branches don't have it, so main checks every branch itself:
+# on pushes to main, on PRs, daily, and on demand.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # every branch, full history
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"   # textkit's TS tests use Node's built-in type stripping
+
+      - name: Check all branches
+        run: bash scripts/ci-checks.sh
+
+      - name: Scan all history for secrets
+        env:
+          GITLEAKS_VERSION: "8.18.4"
+          GITLEAKS_SHA256: "ba6dbb656933921c775ee5a2d1c13a91046e7952e9d919f9bac4cec61d628e7d"
+        run: |
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$tarball" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" gitleaks
+          ./gitleaks detect --source . --log-opts="--all" --redact --no-banner

@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Slower checks before commits leave this machine: history rewrites, every new commit's message, and tests.
+set -euo pipefail
+. "$(dirname "$0")/lib/common.sh"
+warn_if_stale
+
+remote="$1"
+zero=0000000000000000000000000000000000000000
+
+run_textkit_tests() {
+  local sha="$1" dir
+  command -v python3 >/dev/null && command -v node >/dev/null \
+    || { warn "python3 or node missing; skipped textkit tests"; return 0; }
+  dir="$(mktemp -d)"
+  git worktree add -q --detach "$dir" "$sha"
+  if ! (cd "$dir/labs/pr-review/textkit" && python3 -m unittest discover -s py -q && npm test --silent) > "$dir.log" 2>&1; then
+    cat "$dir.log" >&2
+    git worktree remove --force "$dir"
+    fail "textkit tests fail at ${sha:0:7}"
+  fi
+  git worktree remove --force "$dir"; rm -f "$dir.log"
+}
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue   # deleting a branch
+  branch="${remote_ref#refs/heads/}"
+
+  if [ "$remote_sha" != "$zero" ]; then
+    if ! git cat-file -e "$remote_sha" 2>/dev/null; then
+      warn "$branch on $remote has commits you haven't fetched; can't tell if this push rewrites history"
+    elif ! git merge-base --is-ancestor "$remote_sha" "$local_sha"; then
+      # A non-fast-forward push only succeeds with --force, so this is a force-push.
+      [ "${ALLOW_FORCE_PUSH:-}" = "$branch" ] \
+        || fail "this push rewrites published history on $branch. If you really mean it: ALLOW_FORCE_PUSH=$branch git push --force-with-lease ..."
+    fi
+    range="$remote_sha..$local_sha"
+  else
+    range="$local_sha --not --remotes=$remote"
+  fi
+
+  # Re-check messages here: commits made with --no-verify, or before hooks were installed, skip commit-msg.
+  for c in $(git rev-list $range); do
+    [ -n "$(git rev-list --parents -n1 "$c" | cut -s -d' ' -f2)" ] || continue   # root commit
+    msg="$(git log -1 --format=%B "$c")"
+    is_git_generated_subject "$(printf '%s\n' "$msg" | subject_of)" && continue
+    printf '%s\n' "$msg" | "$HOOK_LIB_DIR/validate-commit-msg.sh" \
+      || fail "commit ${c:0:7} on $branch has a bad message; fix it with git rebase -i before pushing"
+  done
+
+  if git rev-list $range -- labs/pr-review/textkit | grep -q . \
+    && git cat-file -e "$local_sha:labs/pr-review/textkit" 2>/dev/null; then
+    run_textkit_tests "$local_sha"
+  fi
+done
