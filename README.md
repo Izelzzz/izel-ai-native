@@ -60,6 +60,18 @@ review 不在 GitHub 上跑，而是在本地或云端机器上，由 agent 执�
 5. 每个 PR、每个版本至少跑 3 次再比较，否则分不清改进和随机波动。
 6. 记录写进 `runs/`，分数写进 `answer-key.md`。
 
+## 提交规范
+
+提交说明使用 `<type>(<scope>): <summary>`，例如 `docs(pr-review-lab): add run 4 results`。`type` 为 `feat`、`fix`、`refactor`、`docs`、`test`、`chore`、`perf`、`build`、`ci`，`scope` 可省略。`update`、`fix bug` 这类笼统的摘要会被拒绝。
+
+`.githooks/commit-msg` 会在提交时自动检查。clone 之后执行一次，启用仓库里的 hook：
+
+    git config core.hooksPath .githooks
+
+检查逻辑在 `scripts/validate-commit-msg.sh`，来自 [`izel-skill`](https://github.com/Izelzzz/izel-skill) 0.1.0 的 `team-git-workflow`。git 自己生成的 `Merge`、`Revert`、`fixup!`、`squash!` 提交说明会直接放行。
+
+只有 `main` 上有这个 hook。在其他分支上提交时，`.githooks/` 不存在，不会做检查。
+
 ## 目前进度
 
 | 版本 | 改了什么 | 抓到 bug | 误判阻断 | 合入结论正确 |
