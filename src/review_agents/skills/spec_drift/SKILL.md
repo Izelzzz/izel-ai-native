@@ -17,7 +17,7 @@ If no PR description, issue or spec states the intended behavior, judge against 
 - Branches the spec names that the code leaves out: a status, a role, an error case, a configuration option.
 - Changes outside the stated scope, such as an unrelated refactor or a feature nobody asked for.
 - Behavior changes the PR does not declare, such as a changed default, a renamed field or a different error.
-- Tests that pass without proving the requirement: they assert on a mock instead of the behavior, skip the branch they claim to cover, or would still pass if the feature were removed. This dimension is the primary owner of these tests.
+- Tests that pass without proving the requirement: they assert on a mock instead of the behavior, assert something that is always true, are skipped, skip the branch they claim to cover, update a snapshot to hide a change, or would still pass if the feature were removed. This dimension is the primary owner of these tests.
 - Documentation, comments or examples that now contradict the new behavior.
 
 ## Not this dimension
