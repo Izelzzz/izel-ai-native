@@ -34,6 +34,8 @@ class _Loader:
         self._next_try = float("-inf")
 
     def __call__(self) -> tiktoken.Encoding | None:
+        if self._encoding is not None:  # loaded: no lock needed to read it
+            return self._encoding
         with self._lock:
             if self._encoding is None and time.monotonic() >= self._next_try:
                 try:
