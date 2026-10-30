@@ -59,3 +59,8 @@ class Settings(BaseSettings):
     @property
     def db_path(self) -> Path:
         return self.data_dir / "review-agents.sqlite3"
+
+    @property
+    def repos_dir(self) -> Path:
+        """Git mirrors of reviewed repositories, on the same volume as the database."""
+        return self.data_dir / "repos"
