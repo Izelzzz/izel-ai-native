@@ -56,6 +56,10 @@ class Settings(BaseSettings):
 
     observability: Observability = Field(default_factory=Observability)
 
+    # A safety net against runaway cost when summarising a repository's modules, not a
+    # design limit; to be tuned from measurements on repositories of different sizes (#17).
+    summary_tokens_per_build: int = Field(default=3_000_000, gt=0)
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "review-agents.sqlite3"

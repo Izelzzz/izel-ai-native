@@ -14,7 +14,13 @@ from pydantic import SecretStr
 
 from review_agents.config import ModelEndpoint
 from review_agents.db import connect, migrate
-from review_agents.models import BudgetExceededError, TokenBudget, UsageMeter, chat_model
+from review_agents.models import (
+    BudgetExceededError,
+    TokenBudget,
+    UsageMeter,
+    chat_model,
+    review_usage,
+)
 
 
 @dataclass
@@ -111,7 +117,7 @@ def test_a_call_reaches_the_service_and_records_its_usage(
     service: FakeService, db: tuple[Path, int], key: str | None, auth: str
 ) -> None:
     budget = TokenBudget(500_000)
-    meter = UsageMeter(db[0], db[1], "security", budget)
+    meter = UsageMeter(budget, review_usage(db[0], db[1], "security"))
 
     reply = chat_model(endpoint(service, key)).invoke("review", config={"callbacks": [meter]})
 
@@ -125,7 +131,7 @@ def test_no_call_is_made_once_the_budget_is_used_up(
     service: FakeService, db: tuple[Path, int]
 ) -> None:
     budget = TokenBudget(20)
-    meter = UsageMeter(db[0], db[1], "security", budget)
+    meter = UsageMeter(budget, review_usage(db[0], db[1], "security"))
     model = chat_model(endpoint(service))
 
     model.invoke("first", config={"callbacks": [meter]})
@@ -141,9 +147,14 @@ def test_agents_of_one_review_share_its_budget(service: FakeService, db: tuple[P
     budget = TokenBudget(18)
     model = chat_model(endpoint(service))
 
-    model.invoke("a", config={"callbacks": [UsageMeter(db[0], db[1], "security", budget)]})
+    model.invoke(
+        "a", config={"callbacks": [UsageMeter(budget, review_usage(db[0], db[1], "security"))]}
+    )
     with pytest.raises(BudgetExceededError):
-        model.invoke("b", config={"callbacks": [UsageMeter(db[0], db[1], "edge_cases", budget)]})
+        model.invoke(
+            "b",
+            config={"callbacks": [UsageMeter(budget, review_usage(db[0], db[1], "edge_cases"))]},
+        )
 
     assert [row[0] for row in usage_rows(db[0])] == ["security"]
 
@@ -153,7 +164,7 @@ def test_transient_errors_are_retried(
     service: FakeService, db: tuple[Path, int], status: int
 ) -> None:
     service.script = [(status, 0.0), (status, 0.0), (200, 0.0)]
-    meter = UsageMeter(db[0], db[1], "security", TokenBudget(500_000))
+    meter = UsageMeter(TokenBudget(500_000), review_usage(db[0], db[1], "security"))
 
     chat_model(endpoint(service)).invoke("review", config={"callbacks": [meter]})
 
@@ -166,7 +177,7 @@ def test_request_and_permission_errors_are_not_retried(
     service: FakeService, db: tuple[Path, int], status: int
 ) -> None:
     service.script = [(status, 0.0)]
-    meter = UsageMeter(db[0], db[1], "security", TokenBudget(500_000))
+    meter = UsageMeter(TokenBudget(500_000), review_usage(db[0], db[1], "security"))
 
     with pytest.raises(openai.APIStatusError):
         chat_model(endpoint(service)).invoke("review", config={"callbacks": [meter]})
@@ -179,7 +190,7 @@ def test_a_slow_service_times_out_after_the_retries(
     service: FakeService, db: tuple[Path, int]
 ) -> None:
     service.script = [(200, 2.0)]
-    meter = UsageMeter(db[0], db[1], "security", TokenBudget(500_000))
+    meter = UsageMeter(TokenBudget(500_000), review_usage(db[0], db[1], "security"))
 
     started = time.monotonic()
     with pytest.raises(openai.APITimeoutError):
@@ -195,7 +206,7 @@ def test_the_client_waits_as_long_as_retry_after_asks(
     # The client's own backoff for two retries stays under about 1.5 seconds.
     service.script = [(429, 0.0), (429, 0.0), (200, 0.0)]
     service.retry_headers = {"Retry-After": "2"}
-    meter = UsageMeter(db[0], db[1], "security", TokenBudget(500_000))
+    meter = UsageMeter(TokenBudget(500_000), review_usage(db[0], db[1], "security"))
 
     started = time.monotonic()
     chat_model(endpoint(service)).invoke("review", config={"callbacks": [meter]})
