@@ -187,6 +187,10 @@ class RepoTools:
 
     def read_issue(self, number: int) -> str:
         """Read an issue or pull request of this repository: title, state, labels and body."""
+        return self.issue_text(number, MAX_ISSUE_CHARS)
+
+    def issue_text(self, number: int, max_chars: int | None = None) -> str:
+        """`read_issue` without the agents' cap on the body: the PR layer reads it all."""
         if number < 1:
             raise ToolError("issue numbers start at 1")
         request = urllib.request.Request(  # noqa: S310 - fixed https API base, GET only
@@ -201,7 +205,7 @@ class RepoTools:
             raise ToolError(f"issue #{number} could not be read: HTTP {exc.code}") from None
         except (urllib.error.URLError, TimeoutError):
             raise ToolError(f"issue #{number} could not be read: GitHub is unreachable") from None
-        body = (issue.get("body") or "")[:MAX_ISSUE_CHARS]
+        body = (issue.get("body") or "")[:max_chars]
         labels = ", ".join(label["name"] for label in issue.get("labels", []))
         return f"#{number} {issue['title']} [{issue['state']}] labels: {labels or '-'}\n\n{body}"
 

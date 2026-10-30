@@ -208,7 +208,8 @@ def test_agents_only_get_read_only_tools(tools: RepoTools) -> None:
     assert set(given) == {"read_file", "list_dir", "search_code", "git_log", "read_issue"}
     public = {name for name in dir(RepoTools) if not name.startswith("_")}
     # A new public method must be added here on purpose, after checking it cannot write.
-    assert public == {*given, "NAMES", "is_skipped"}
+    # issue_text is read_issue without the body cap, for the PR layer, not for agents.
+    assert public == {*given, "NAMES", "is_skipped", "issue_text"}
 
 
 def test_an_invalid_pattern_and_an_unreachable_api_come_back_as_errors(

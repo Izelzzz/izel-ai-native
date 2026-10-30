@@ -97,13 +97,20 @@ class Fixture:
         config: RepoConfig | None = None,
         previous_head: str | None = None,
         api_base: str = "http://127.0.0.1:9",
+        surrounding: bool = False,
     ) -> PrLayer:
         request = PrRequest(
             "octo/shop", 7, "Clamp refunds", body, self.base, self.head, previous_head
         )
         with closing(connect(self.db_path)) as conn:
             return build_pr_layer(
-                conn, request, self.git_dir, config or RepoConfig(), token="t", api_base=api_base
+                conn,
+                request,
+                self.git_dir,
+                config or RepoConfig(),
+                token="t",
+                api_base=api_base,
+                surrounding_code=surrounding,
             )
 
 
@@ -131,8 +138,15 @@ def test_a_diff_shows_the_whole_changed_function(fx: Fixture) -> None:
     assert "+    total = Money(min(cents, order.paid))" in patch
 
 
-def test_callers_tests_and_types_of_changed_code_are_included(fx: Fixture) -> None:
-    excerpts = {(e.kind, e.name, e.path): e.text for e in fx.layer().excerpts}
+def test_code_around_the_changes_is_left_to_the_agents_by_default(fx: Fixture) -> None:
+    layer = fx.layer()
+
+    assert layer.excerpts == []
+    assert "## Code around the changes" not in layer.render()
+
+
+def test_callers_tests_and_types_of_changed_code_are_included_when_asked(fx: Fixture) -> None:
+    excerpts = {(e.kind, e.name, e.path): e.text for e in fx.layer(surrounding=True).excerpts}
 
     caller = excerpts[("usage", "refund", "api/orders.py")]
     assert "4: def handle(order):" in caller
@@ -144,7 +158,7 @@ def test_callers_tests_and_types_of_changed_code_are_included(fx: Fixture) -> No
 
 
 def test_a_generic_name_is_not_expanded_but_noted(fx: Fixture) -> None:
-    layer = fx.layer()
+    layer = fx.layer(surrounding=True)
 
     assert not any(e.name == "helper_value" for e in layer.excerpts)
     assert any("`helper_value` is used in 32 places" in n for n in layer.notes)
@@ -154,7 +168,14 @@ def test_a_generic_name_is_not_expanded_but_noted(fx: Fixture) -> None:
 def issue_api() -> Iterator[str]:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            if self.path.endswith("/issues/42"):
+            number = int(self.path.rsplit("/", 1)[-1])
+            if 100 <= number < 112:
+                body = {"title": f"Issue {number}", "state": "open", "labels": [],
+                        "body": "x" * 30_000 + f"end of {number}"}  # fmt: skip
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(json.dumps(body).encode())
+            elif number == 42:
                 body = {"title": "Partial refunds", "state": "open", "labels": [],
                         "body": "See docs/specs/refund.md and docs/specs/orders.md"}  # fmt: skip
                 self.send_response(200)
@@ -179,6 +200,15 @@ def test_linked_issues_are_read_and_failures_are_noted(fx: Fixture, issue_api: s
     assert [n for n, _ in layer.issues] == [42]
     assert "Partial refunds" in layer.issues[0][1]
     assert any("#43" in n and "HTTP 404" in n for n in layer.notes)
+
+
+def test_every_linked_issue_is_read_in_full(fx: Fixture, issue_api: str) -> None:
+    body = " ".join(f"#{n}" for n in range(100, 112))
+
+    layer = fx.layer(body=body, api_base=issue_api)
+
+    assert [n for n, _ in layer.issues] == list(range(100, 112))
+    assert all(text.endswith(f"end of {n}") for n, text in layer.issues)
 
 
 def test_a_spec_mentioned_or_changed_is_read_from_the_pr_and_marked(
