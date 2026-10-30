@@ -228,3 +228,14 @@ def test_wrapped_tools_keep_their_signature_and_docs(tools: RepoTools) -> None:
 
     assert list(inspect.signature(read).parameters) == ["path", "start_line", "end_line"]
     assert read.__doc__ == RepoTools.read_file.__doc__
+
+
+@pytest.mark.parametrize("commit", ["HEAD", "abc123", "--output=x", "main"])
+def test_tools_only_accept_a_full_commit_sha(checkout: tuple[Path, str], commit: str) -> None:
+    with pytest.raises(ValueError, match="full commit sha"):
+        RepoTools(checkout[0], "octo/app", commit, [])
+
+
+def test_list_dir_refuses_a_skipped_directory(tools: RepoTools) -> None:
+    with pytest.raises(ToolError, match="skip list"):
+        tools.list_dir("fixtures")

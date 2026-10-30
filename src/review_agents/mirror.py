@@ -27,6 +27,12 @@ def check_repo_name(repo: str) -> str:
     return repo
 
 
+def check_commit_sha(sha: str) -> str:
+    if not _SHA.fullmatch(sha):
+        raise ValueError(f"not a full commit sha: {sha!r}")
+    return sha
+
+
 def git_env(token: str | None = None, remote_prefix: str = "") -> dict[str, str]:
     """Environment for every git call: no user or system config, no prompts.
 
@@ -109,8 +115,7 @@ class MirrorStore:
             if not ref.startswith("refs/") or any(c in ref for c in " :^~?*[\\"):
                 raise ValueError(f"not a full ref name: {ref!r}")
         for sha in commits:
-            if not _SHA.fullmatch(sha):
-                raise ValueError(f"not a full commit sha: {sha!r}")
+            check_commit_sha(sha)
         url = self.remote_url(repo)
         env = git_env(token, remote_prefix=self._remote_base)
         with self._locked(repo) as git_dir:

@@ -13,7 +13,7 @@ from collections.abc import Callable, Sequence
 from functools import cache
 from pathlib import Path, PurePosixPath
 
-from review_agents.mirror import GitError, check_repo_name, run_git
+from review_agents.mirror import GitError, check_commit_sha, check_repo_name, run_git
 from review_agents.repo_config import MAX_FILE_BYTES
 
 MAX_SEARCH_MATCHES = 100
@@ -78,7 +78,7 @@ class RepoTools:
     ) -> None:
         self._git_dir = git_dir
         self._repo = check_repo_name(repo)
-        self._commit = commit
+        self._commit = check_commit_sha(commit)
         self._skip_paths = tuple(skip_paths)
         self._token = token
         self._api_base = api_base.rstrip("/")
@@ -116,6 +116,8 @@ class RepoTools:
     def list_dir(self, path: str = "") -> str:
         """List one directory at the reviewed commit: type, size and name per entry."""
         clean = _clean_path(path)
+        if clean and self.is_skipped(f"{clean}/"):
+            raise ToolError(f"{clean} is in the skip list and is not read")
         target = f"{self._commit}:{clean}" if clean else f"{self._commit}^{{tree}}"
         try:
             output = self._git("ls-tree", "-l", target).decode("utf-8", "replace")
