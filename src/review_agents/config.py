@@ -1,18 +1,60 @@
 from pathlib import Path
+from typing import Literal, Self
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Settings(BaseSettings):
-    """Service settings, read once from `REVIEW_AGENTS_*` environment variables."""
+class ModelEndpoint(BaseModel):
+    """An OpenAI-compatible model service."""
 
-    model_config = SettingsConfigDict(env_prefix="REVIEW_AGENTS_", frozen=True)
+    model_config = ConfigDict(frozen=True)
+
+    base_url: HttpUrl
+    model: str = Field(min_length=1)
+    # Local model servers often need no key.
+    api_key: SecretStr | None = None
+
+
+class Observability(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = False
+    # `metadata` records each step without code, prompts or model output.
+    content: Literal["metadata", "full"] = "metadata"
+    exporter: Literal["langfuse", "langsmith", "phoenix", "otlp"] = "otlp"
+    endpoint: HttpUrl | None = None
+    headers: dict[str, SecretStr] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _endpoint_when_enabled(self) -> Self:
+        if self.enabled and self.endpoint is None:
+            raise ValueError("observability is enabled but has no endpoint")
+        return self
+
+
+class Settings(BaseSettings):
+    """Service settings, read once from `REVIEW_AGENTS_*` environment variables.
+
+    Secrets come only from the environment. Nested values use `__`, for example
+    `REVIEW_AGENTS_FINDER_MODEL__BASE_URL`; `headers` takes a JSON object.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="REVIEW_AGENTS_", env_nested_delimiter="__", frozen=True
+    )
 
     data_dir: Path = Path("data")
     host: str = "127.0.0.1"
     port: int = Field(default=8080, ge=1, le=65535)
     worker_poll_seconds: float = Field(default=2.0, gt=0)
+
+    # Required once reviews run (#9) and requests are authenticated (#13).
+    finder_model: ModelEndpoint | None = None
+    verifier_model: ModelEndpoint | None = None
+    shared_secret: SecretStr | None = Field(default=None, min_length=32)
+
+    observability: Observability = Field(default_factory=Observability)
 
     @property
     def db_path(self) -> Path:

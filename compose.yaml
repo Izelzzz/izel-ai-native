@@ -12,7 +12,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"
+        - "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"REVIEW_AGENTS_PORT\", \"8080\")}/healthz', timeout=3)"
       interval: 30s
       timeout: 5s
       retries: 3
