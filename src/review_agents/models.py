@@ -1,5 +1,6 @@
 """Model access: OpenAI-compatible chat models, usage records and the token budget."""
 
+import math
 import threading
 import time
 from collections.abc import Callable
@@ -48,8 +49,18 @@ def chat_model(
     )
 
 
+# Cached input costs about a tenth of fresh input at most services (decision D-009).
+CACHED_INPUT_WEIGHT = 0.1
+
+
+def charged_tokens(input_tokens: int, cached_input_tokens: int, output_tokens: int) -> int:
+    """What one call costs the budget: cached input at a tenth, the rest in full."""
+    fresh = input_tokens - cached_input_tokens
+    return fresh + math.ceil(cached_input_tokens * CACHED_INPUT_WEIGHT) + output_tokens
+
+
 class TokenBudget:
-    """Input plus output tokens one review may use. Shared by all of its agents."""
+    """Tokens one review may use, as `charged_tokens` counts them. Shared by its agents."""
 
     def __init__(self, limit: int) -> None:
         self.limit = limit
@@ -70,20 +81,20 @@ class TokenBudget:
             self._used += tokens
 
 
-RecordUsage = Callable[[str, int, int, int], None]
-"""Stores one call's usage: model, input tokens, output tokens, duration in ms."""
+RecordUsage = Callable[[str, int, int, int, int], None]
+"""Stores one call's usage: model, input, cached input and output tokens, duration in ms."""
 
 
 def review_usage(db_path: Path, review_id: int, agent: str) -> RecordUsage:
     """Records into `usage`, the per-review table."""
 
-    def record(model: str, input_tokens: int, output_tokens: int, duration_ms: int) -> None:
+    def record(model: str, input_tokens: int, cached: int, output_tokens: int, ms: int) -> None:
         # Callbacks run on the model call's thread, so each record opens its own connection.
         with closing(connect(db_path, create=False)) as conn:
             conn.execute(
-                "INSERT INTO usage (review_id, agent, model, input_tokens, output_tokens,"
-                " duration_ms) VALUES (?, ?, ?, ?, ?, ?)",
-                (review_id, agent, model, input_tokens, output_tokens, duration_ms),
+                "INSERT INTO usage (review_id, agent, model, input_tokens, cached_input_tokens,"
+                " output_tokens, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (review_id, agent, model, input_tokens, cached, output_tokens, ms),
             )
 
     return record
@@ -92,12 +103,12 @@ def review_usage(db_path: Path, review_id: int, agent: str) -> RecordUsage:
 def summary_usage(db_path: Path, repo: str) -> RecordUsage:
     """Records into `summary_usage`, for module summaries that belong to no single review."""
 
-    def record(model: str, input_tokens: int, output_tokens: int, duration_ms: int) -> None:
+    def record(model: str, input_tokens: int, cached: int, output_tokens: int, ms: int) -> None:
         with closing(connect(db_path, create=False)) as conn:
             conn.execute(
-                "INSERT INTO summary_usage (repo, model, input_tokens, output_tokens, duration_ms)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (repo, model, input_tokens, output_tokens, duration_ms),
+                "INSERT INTO summary_usage (repo, model, input_tokens, cached_input_tokens,"
+                " output_tokens, duration_ms) VALUES (?, ?, ?, ?, ?, ?)",
+                (repo, model, input_tokens, cached, output_tokens, ms),
             )
 
     return record
@@ -141,17 +152,19 @@ class UsageMeter(BaseCallbackHandler):
     def on_llm_end(self, response: LLMResult, *, run_id: UUID, **kwargs: Any) -> None:
         started = self._started.pop(run_id, self._clock())
         duration_ms = int((self._clock() - started) * 1000)
-        input_tokens = output_tokens = 0
+        input_tokens = cached = output_tokens = 0
         for generations in response.generations:
             for generation in generations:
                 usage = getattr(getattr(generation, "message", None), "usage_metadata", None)
                 if usage:
                     input_tokens += usage["input_tokens"]
                     output_tokens += usage["output_tokens"]
+                    details = usage.get("input_token_details") or {}
+                    cached += min(details.get("cache_read") or 0, usage["input_tokens"])
         model = (response.llm_output or {}).get("model_name", "")
         # Charged before the record is written: if writing fails, the budget still holds.
-        self._budget.charge(input_tokens + output_tokens)
-        self._record(model, input_tokens, output_tokens, duration_ms)
+        self._budget.charge(charged_tokens(input_tokens, cached, output_tokens))
+        self._record(model, input_tokens, cached, output_tokens, duration_ms)
 
     def on_llm_error(self, error: BaseException, *, run_id: UUID, **kwargs: Any) -> None:
         self._started.pop(run_id, None)

@@ -10,6 +10,10 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project
 COPY src ./src
 RUN uv sync --locked --no-dev --no-editable
+# Token counting needs tiktoken's encoding file; fetched here (tiktoken checks its hash)
+# so the running service never downloads it (decision D-013).
+ENV TIKTOKEN_CACHE_DIR=/app/tiktoken
+RUN /app/.venv/bin/python -c "from review_agents.context.tokens import ENCODING; import tiktoken; tiktoken.get_encoding(ENCODING)"
 
 FROM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
 # The review reads repositories through git. Package versions follow the pinned base image's
@@ -21,7 +25,9 @@ RUN apt-get update \
 RUN useradd --system --uid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin review \
     && mkdir /data && chown review /data
 COPY --from=build /app/.venv /app/.venv
+COPY --from=build /app/tiktoken /app/tiktoken
 ENV PATH="/app/.venv/bin:$PATH" \
+    TIKTOKEN_CACHE_DIR=/app/tiktoken \
     REVIEW_AGENTS_DATA_DIR=/data \
     REVIEW_AGENTS_HOST=0.0.0.0 \
     REVIEW_AGENTS_PORT=8080

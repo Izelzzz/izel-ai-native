@@ -56,6 +56,10 @@ class Settings(BaseSettings):
 
     observability: Observability = Field(default_factory=Observability)
 
+    # Safety nets against runaway cost, not design limits (decisions D-009, D-016); to be
+    # tuned from measurements on repositories of different sizes (#17). A review's
+    # budget counts cached input at a tenth; a repository can only lower it.
+    tokens_per_review: int = Field(default=1_500_000, gt=0)
     # A safety net against runaway cost when summarising a repository's modules, not a
     # design limit; to be tuned from measurements on repositories of different sizes (#17).
     summary_tokens_per_build: int = Field(default=3_000_000, gt=0)

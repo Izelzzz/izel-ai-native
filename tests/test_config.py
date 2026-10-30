@@ -69,3 +69,11 @@ def test_everything_optional_is_off_by_default() -> None:
     assert settings.shared_secret is None
     assert settings.observability.enabled is False
     assert settings.observability.content == "metadata"
+
+
+def test_the_review_token_budget_is_a_service_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert Settings().tokens_per_review == 1_500_000
+
+    monkeypatch.setenv("REVIEW_AGENTS_TOKENS_PER_REVIEW", "800000")
+
+    assert Settings().tokens_per_review == 800_000

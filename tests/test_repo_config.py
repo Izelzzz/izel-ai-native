@@ -81,7 +81,6 @@ def test_at_least_one_dimension_must_stay_enabled() -> None:
 @pytest.mark.parametrize(
     ("limit", "value"),
     [
-        ("tokens_per_review", 500_001),
         ("tool_calls_per_agent", 26),
         ("review_minutes", 16),
         ("full_review_rounds", 4),
@@ -92,6 +91,17 @@ def test_at_least_one_dimension_must_stay_enabled() -> None:
 )
 def test_limits_can_only_be_lowered(limit: str, value: int) -> None:
     assert_rejected(f"limits: {{{limit}: {value}}}\n", f"limits.{limit}")
+
+
+def test_the_token_budget_is_the_service_ceiling_unless_the_repository_lowers_it() -> None:
+    default = parse_repo_config("").config.limits
+    lowered = parse_repo_config("limits: {tokens_per_review: 200000}\n").config.limits
+    raised = parse_repo_config("limits: {tokens_per_review: 9000000}\n")
+
+    assert default.token_budget(ceiling=1_500_000) == 1_500_000
+    assert lowered.token_budget(ceiling=1_500_000) == 200_000
+    assert raised.errors == []
+    assert raised.config.limits.token_budget(ceiling=1_500_000) == 1_500_000
 
 
 def test_limits_can_be_lowered() -> None:
