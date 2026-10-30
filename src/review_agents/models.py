@@ -70,6 +70,39 @@ class TokenBudget:
             self._used += tokens
 
 
+RecordUsage = Callable[[str, int, int, int], None]
+"""Stores one call's usage: model, input tokens, output tokens, duration in ms."""
+
+
+def review_usage(db_path: Path, review_id: int, agent: str) -> RecordUsage:
+    """Records into `usage`, the per-review table."""
+
+    def record(model: str, input_tokens: int, output_tokens: int, duration_ms: int) -> None:
+        # Callbacks run on the model call's thread, so each record opens its own connection.
+        with closing(connect(db_path, create=False)) as conn:
+            conn.execute(
+                "INSERT INTO usage (review_id, agent, model, input_tokens, output_tokens,"
+                " duration_ms) VALUES (?, ?, ?, ?, ?, ?)",
+                (review_id, agent, model, input_tokens, output_tokens, duration_ms),
+            )
+
+    return record
+
+
+def summary_usage(db_path: Path, repo: str) -> RecordUsage:
+    """Records into `summary_usage`, for module summaries that belong to no single review."""
+
+    def record(model: str, input_tokens: int, output_tokens: int, duration_ms: int) -> None:
+        with closing(connect(db_path, create=False)) as conn:
+            conn.execute(
+                "INSERT INTO summary_usage (repo, model, input_tokens, output_tokens, duration_ms)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (repo, model, input_tokens, output_tokens, duration_ms),
+            )
+
+    return record
+
+
 class UsageMeter(BaseCallbackHandler):
     """Refuses model calls once the budget is spent and records every call's usage.
 
@@ -82,16 +115,12 @@ class UsageMeter(BaseCallbackHandler):
 
     def __init__(
         self,
-        db_path: Path,
-        review_id: int,
-        agent: str,
         budget: TokenBudget,
+        record: RecordUsage,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        self._db_path = db_path
-        self._review_id = review_id
-        self._agent = agent
         self._budget = budget
+        self._record = record
         self._clock = clock
         self._started: dict[UUID, float] = {}
 
@@ -126,12 +155,3 @@ class UsageMeter(BaseCallbackHandler):
 
     def on_llm_error(self, error: BaseException, *, run_id: UUID, **kwargs: Any) -> None:
         self._started.pop(run_id, None)
-
-    def _record(self, model: str, input_tokens: int, output_tokens: int, duration_ms: int) -> None:
-        # Callbacks run on the model call's thread, so each record opens its own connection.
-        with closing(connect(self._db_path, create=False)) as conn:
-            conn.execute(
-                "INSERT INTO usage (review_id, agent, model, input_tokens, output_tokens,"
-                " duration_ms) VALUES (?, ?, ?, ?, ?, ?)",
-                (self._review_id, self._agent, model, input_tokens, output_tokens, duration_ms),
-            )

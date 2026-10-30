@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from review_agents.db import connect, migrate
+from review_agents.db import _migrations, connect, migrate
+
+LATEST = max(version for version, _ in _migrations())
 
 TABLES = {
     "reviews",
@@ -15,6 +17,7 @@ TABLES = {
     "usage",
     "steps",
     "context_cache",
+    "summary_usage",
 }
 
 
@@ -25,7 +28,7 @@ def table_names(conn: sqlite3.Connection) -> set[str]:
 
 def test_migrate_creates_every_table_on_an_empty_database(tmp_path: Path) -> None:
     with closing(connect(tmp_path / "db.sqlite3")) as conn:
-        assert migrate(conn) == 1
+        assert migrate(conn) == LATEST
         assert table_names(conn) >= TABLES
 
 
@@ -55,9 +58,9 @@ def test_migrate_is_idempotent_across_restarts(tmp_path: Path) -> None:
             " VALUES ('o/r', 1, 'a', 'b', 'quick')"
         )
     with closing(connect(path)) as conn:
-        assert migrate(conn) == 1
+        assert migrate(conn) == LATEST
         assert conn.execute("SELECT count(*) AS n FROM reviews").fetchone()["n"] == 1
-        assert conn.execute("SELECT count(*) AS n FROM schema_version").fetchone()["n"] == 1
+        assert conn.execute("SELECT count(*) AS n FROM schema_version").fetchone()["n"] == LATEST
 
 
 @pytest.mark.parametrize(
