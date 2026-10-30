@@ -8,6 +8,7 @@ changes is left to the agents and their tools unless asked for (decision D-015).
 import re
 import sqlite3
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -15,12 +16,15 @@ from review_agents.context.markup import untrusted
 from review_agents.context.tokens import estimate_tokens
 from review_agents.mirror import GitError, check_commit_sha, check_repo_name, run_git
 from review_agents.repo_config import RepoConfig
-from review_agents.tools import RepoTools, ToolError, glob_match
+from review_agents.tools import MAX_ISSUE_CHARS, RepoTools, ToolError, glob_match
 
 GIT_TIMEOUT_SECONDS = 30.0
 # A name used in more places than this is too generic to expand usefully; the agent
 # can still search for it.
 MAX_USAGES_PER_NAME = 30
+# A safety net against a description that links thousands of issues (decision D-017).
+MAX_LINKED_ISSUES = 100
+ISSUE_FETCH_WORKERS = 8
 TYPE_DEFINITION_LINES = 20
 
 NO_SPEC_NOTE = "No specification found; review against the PR description only."
@@ -262,14 +266,31 @@ def find_surrounding_code(
 
 
 def linked_issues(tools: RepoTools, body: str, notes: list[str]) -> list[tuple[int, str]]:
-    # Every linked issue is read in full (decision D-016).
+    # Each linked issue is read in full (decision D-016).
     numbers = list(dict.fromkeys(int(n) for n in _ISSUE_REF.findall(body)))
-    issues = []
-    for number in numbers:
+    if len(numbers) > MAX_LINKED_ISSUES:
+        notes.append(
+            f"The description links {len(numbers)} issues; {len(numbers) - MAX_LINKED_ISSUES}"
+            " more were not read; read_issue fetches one, its body cut at"
+            f" {MAX_ISSUE_CHARS:,} characters."
+        )
+        numbers = numbers[:MAX_LINKED_ISSUES]
+
+    def fetch(number: int) -> str | ToolError:
         try:
-            issues.append((number, tools.issue_text(number)))
+            return tools.issue_text(number)
         except ToolError as exc:
-            notes.append(str(exc))
+            return exc
+
+    # Fetched side by side: one at a time, 100 slow answers would take many minutes.
+    with ThreadPoolExecutor(max_workers=ISSUE_FETCH_WORKERS) as pool:
+        results = list(pool.map(fetch, numbers))
+    issues = []
+    for number, result in zip(numbers, results, strict=True):
+        if isinstance(result, ToolError):
+            notes.append(str(result))
+        else:
+            issues.append((number, result))
     return issues
 
 

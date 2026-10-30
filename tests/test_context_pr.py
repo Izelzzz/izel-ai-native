@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 from gitrepo import Upstream, git
 
-from review_agents.context.pr_layer import NO_SPEC_NOTE, PrLayer, PrRequest, build_pr_layer
+from review_agents.context.pr_layer import (
+    MAX_LINKED_ISSUES,
+    NO_SPEC_NOTE,
+    PrLayer,
+    PrRequest,
+    build_pr_layer,
+)
 from review_agents.db import connect, migrate
 from review_agents.mirror import MirrorStore
 from review_agents.repo_config import RepoConfig
@@ -169,7 +175,7 @@ def issue_api() -> Iterator[str]:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             number = int(self.path.rsplit("/", 1)[-1])
-            if 100 <= number < 112:
+            if 100 <= number < 300:
                 body = {"title": f"Issue {number}", "state": "open", "labels": [],
                         "body": "x" * 30_000 + f"end of {number}"}  # fmt: skip
                 self.send_response(200)
@@ -209,6 +215,16 @@ def test_every_linked_issue_is_read_in_full(fx: Fixture, issue_api: str) -> None
 
     assert [n for n, _ in layer.issues] == list(range(100, 112))
     assert all(text.endswith(f"end of {n}") for n, text in layer.issues)
+
+
+def test_linked_issues_stop_at_a_safety_net_and_say_so(fx: Fixture, issue_api: str) -> None:
+    body = " ".join(f"#{n}" for n in range(100, 300))
+
+    layer = fx.layer(body=body, api_base=issue_api)
+
+    assert len(layer.issues) == MAX_LINKED_ISSUES
+    assert [n for n, _ in layer.issues] == list(range(100, 200))  # in the order linked
+    assert any("100 more" in n and "read_issue" in n for n in layer.notes)
 
 
 def test_a_spec_mentioned_or_changed_is_read_from_the_pr_and_marked(
