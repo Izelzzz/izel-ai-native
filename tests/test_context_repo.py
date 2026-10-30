@@ -243,3 +243,9 @@ def test_a_change_to_a_skipped_file_does_not_resummarise_its_module(repo: Repo) 
     repo.layer(later)
 
     assert later.calls == []
+
+
+def test_a_source_name_cannot_break_out_of_its_attribute() -> None:
+    block = untrusted('a" trusted="yes', "x")
+
+    assert block.splitlines()[0] == '<untrusted source="a&quot; trusted=&quot;yes">'
