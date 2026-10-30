@@ -310,3 +310,45 @@ def test_a_tree_too_large_is_folded_from_the_deepest_level_and_says_so(repo: Rep
 def test_room_for_a_module_follows_the_model_window() -> None:
     assert module_tokens(128_000) == 102_400
     assert module_tokens(32_000) == 25_600
+
+
+def test_a_module_too_large_for_the_request_is_not_sent_and_keeps_its_stats(repo: Repo) -> None:
+    # One file larger than a whole summary request: files are never split, so the
+    # module keeps its git stats rather than sending a request that cannot fit.
+    repo.commit({"gen/big.py": "x = 1\n" * 30_000}, "generated")
+    repo.sync()
+    summarizer = CountingSummarizer()
+    git_dir = repo.store.git_dir("octo/shop")
+
+    with closing(connect(repo.db_path)) as conn:
+        layer = build_repo_layer(
+            conn, "octo/shop", git_dir, "main", SKIP, summarizer, module_tokens=20_000
+        )
+
+    assert "gen" not in summarizer.calls
+    assert "payments" in summarizer.calls
+    gen = next(m for m in layer.modules if m.path == "gen")
+    assert gen.summary is None
+    assert "part" not in gen.stats
+
+
+def test_the_file_list_counts_towards_a_module_size() -> None:
+    many = [f"pkg/a_rather_long_file_name_number_{i:04}.py" for i in range(100)]
+
+    modules = split_modules(files(*many, size=3), module_tokens=1_000)
+
+    assert len(modules) > 1
+
+
+def test_a_tree_whose_top_level_alone_is_too_large_keeps_only_the_totals(repo: Repo) -> None:
+    repo.commit({f"top{i}/x.py": "x = 1\n" for i in range(60)}, "many top-level directories")
+    repo.sync()
+    git_dir = repo.store.git_dir("octo/shop")
+
+    with closing(connect(repo.db_path)) as conn:
+        small = build_repo_layer(conn, "octo/shop", git_dir, "main", SKIP, tree_tokens=100)
+        large = build_repo_layer(conn, "octo/shop", git_dir, "main", SKIP)
+
+    assert estimate_tokens(small.tree) <= 100
+    assert "top0/" not in small.tree
+    assert "top0/" in large.tree  # a different limit is not served from the other's cache

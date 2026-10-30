@@ -113,20 +113,21 @@ def directory_tree(snapshot: Snapshot, max_tokens: int = TREE_TOKENS) -> str:
                 name = PurePosixPath(path).name
                 lines.append(f"{'  ' * (level + 1)}{name}/ ({counts[path]} files)")
         if depth is not None:
-            lines.append(f"(directories deeper than {depth} levels are folded to fit)")
+            folded = f"deeper than {depth} levels" if depth else f"all {len(counts)}"
+            lines.append(f"(directories {folded} are folded to fit)")
         return "\n".join(lines)
 
     tree = render(None)
     deepest = max((p.count("/") + 1 for p in counts), default=0)
     depth = deepest - 1
-    while estimate_tokens(tree) > max_tokens and depth >= 1:
+    while estimate_tokens(tree) > max_tokens and depth >= 0:
         tree = render(depth)
         depth -= 1
     return tree
 
 
-def _key(snapshot: Snapshot, memory_version: str) -> str:
-    raw = f"{LAYER_VERSION}:{snapshot.tree_id}:{memory_version}"
+def _key(snapshot: Snapshot, memory_version: str, tree_tokens: int) -> str:
+    raw = f"{LAYER_VERSION}:{snapshot.tree_id}:{memory_version}:{tree_tokens}"
     return "layer:" + hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -150,7 +151,7 @@ def build_repo_layer(
     `summarize=None` to use only the summaries that already exist.
     """
     snapshot = Snapshot.at_branch(git_dir, default_branch, tuple(skip_paths))
-    key = _key(snapshot, memory_version)
+    key = _key(snapshot, memory_version, tree_tokens)
     row = conn.execute(
         "SELECT content FROM context_cache WHERE repo = ? AND layer = 'repo' AND cache_key = ?",
         (repo, key),

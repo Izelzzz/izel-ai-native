@@ -104,18 +104,26 @@ class Module:
 
     @property
     def name(self) -> str:
-        part = f" (part {self.part[0]} of {self.part[1]})" if self.part else ""
-        return f"{self.path or '.'}{part}"
+        return f"{self.path or '.'}{self._part_label}"
+
+    @property
+    def _part_label(self) -> str:
+        return f" (part {self.part[0]} of {self.part[1]})" if self.part else ""
 
     def stats(self) -> str:
         entry = f" · entry {self.entry}" if self.entry else ""
-        part = f" (part {self.part[0]} of {self.part[1]})" if self.part else ""
-        return f"{self.path or '.'}/{part} · {len(self.files)} files · {self.language}{entry}"
+        name = f"{self.path or '.'}/{self._part_label}"
+        return f"{name} · {len(self.files)} files · {self.language}{entry}"
 
 
 def size_tokens(entry: Entry) -> int:
-    """A file's tokens judged from its size; files too large to read count as none."""
-    return 0 if entry.size > MAX_FILE_BYTES else math.ceil(entry.size / _BYTES_PER_TOKEN)
+    """A file's share of a summary request, judged before reading it.
+
+    Its content counts from its size (files too large to read have none), and its path
+    twice: once in the file list and once in the header above its content.
+    """
+    content = 0 if entry.size > MAX_FILE_BYTES else math.ceil(entry.size / _BYTES_PER_TOKEN)
+    return content + 2 * math.ceil(len(entry.path) / _BYTES_PER_TOKEN) + 2
 
 
 def split_modules(files: Iterable[Entry], module_tokens: int = MODULE_TOKENS) -> list[Module]:
@@ -182,6 +190,8 @@ def _parts(path: str, files: list[Entry], module_tokens: int) -> list[Module]:
             used = 0
         runs[-1].append(entry)
         used += size
+    if len(runs) == 1:  # one file too large on its own: there is nothing to split
+        return [Module(path, tuple(runs[0]))]
     return [Module(path, tuple(run), (i, len(runs))) for i, run in enumerate(runs, start=1)]
 
 
@@ -238,8 +248,14 @@ def module_summaries(
         ).fetchone()
         summary: str | None = json.loads(row["content"])["summary"] if row else None
         if summary is None and summarize is not None:
+            source = module_source(snapshot, module)
+            # The size was judged before reading; a request that cannot fit is not sent.
+            if estimate_tokens(source) > module_tokens:
+                log.warning("module %s of %s is too large for one summary", module.name, repo)
+                results.append(ModuleSummary(module.path, module.stats(), None))
+                continue
             try:
-                summary = summarize(module.name, module_source(snapshot, module)).strip()
+                summary = summarize(module.name, source).strip()
             except BudgetExceededError:
                 log.warning(
                     "summary budget used up; %s and later modules keep their stats",
