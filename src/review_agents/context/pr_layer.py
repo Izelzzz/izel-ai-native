@@ -26,13 +26,13 @@ TYPE_DEFINITION_LINES = 20
 NO_SPEC_NOTE = "No specification found; review against the PR description only."
 
 _ISSUE_REF = re.compile(r"(?<![\w/#])#(\d+)\b")
-_DEFINITION = re.compile(
+DEFINITION = re.compile(
     r"^\s*(?:export\s+)?(?:default\s+)?(?:public\s+|private\s+|protected\s+)?(?:static\s+)?"
     r"(?:async\s+)?(?:def|class|function|interface|type|struct|enum|trait|fn)\s+([A-Za-z_]\w*)"
     r"|^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)"
 )
 _TYPE_NAME = re.compile(r"\b([A-Z][A-Za-z0-9_]*[a-z][A-Za-z0-9_]*)\b")
-_TEST_PATH = re.compile(
+TEST_PATH = re.compile(
     r"(^|/)(tests?|spec|specs|__tests__)/|(^|/)test_[^/]+$|_test\.[^/]+$|\.(test|spec)\.[^/]+$"
 )
 
@@ -80,6 +80,9 @@ class PrLayer:
     excerpts: list[Excerpt]
     previous_findings: list[str]
     notes: list[str] = field(default_factory=list)
+    # Set when a large PR is reviewed in groups: what the other groups change (D-008).
+    group: str | None = None
+    signatures_elsewhere: list[str] = field(default_factory=list)
 
     @property
     def changed_names(self) -> list[str]:
@@ -114,6 +117,11 @@ class PrLayer:
         if self.previous_findings:
             parts.append("## Findings still open from earlier rounds")
             parts.append(untrusted("previous-findings", "\n".join(self.previous_findings)))
+        if self.group:
+            parts.append(f"## Review group\n{self.group}")
+        if self.signatures_elsewhere:
+            parts.append("## Definitions changed elsewhere in this PR")
+            parts.append(untrusted("other-groups", "\n".join(self.signatures_elsewhere)))
         if self.notes:
             parts.append("## Notes")
             parts.append("\n".join(f"- {n}" for n in self.notes))
@@ -170,9 +178,9 @@ def names_in_patch(patch: str) -> set[str]:
     for line in patch.splitlines():
         if line.startswith("@@"):
             in_hunk = True
-            match = _DEFINITION.search(line.split("@@", 2)[-1])
+            match = DEFINITION.search(line.split("@@", 2)[-1])
         elif in_hunk and line[:1] in "+- ":
-            match = _DEFINITION.search(line[1:])
+            match = DEFINITION.search(line[1:])
         else:
             continue
         if match:
@@ -243,7 +251,7 @@ def surrounding_code(
         output = git("grep", "-n", "-I", "-w", "-W", "--null", "-e", name, head, ok_codes=(0, 1))
         for path, blocks in sorted(_grep_blocks(output, head).items()):
             if keep(path):
-                kind = "test" if _TEST_PATH.search(path) else "usage"
+                kind = "test" if TEST_PATH.search(path) else "usage"
                 excerpts.append(Excerpt(kind, name, path, "\n...\n".join(blocks)))
     for type_name in sorted(types - names):
         pattern = rf"(class|interface|type|struct|enum|trait)\s+{type_name}\b"
