@@ -58,11 +58,12 @@ class TokenBudget:
 
     @property
     def used(self) -> int:
-        return self._used
+        with self._lock:
+            return self._used
 
     @property
     def exhausted(self) -> bool:
-        return self._used >= self.limit
+        return self.used >= self.limit
 
     def charge(self, tokens: int) -> None:
         with self._lock:
@@ -119,6 +120,7 @@ class UsageMeter(BaseCallbackHandler):
                     input_tokens += usage["input_tokens"]
                     output_tokens += usage["output_tokens"]
         model = (response.llm_output or {}).get("model_name", "")
+        # Charged before the record is written: if writing fails, the budget still holds.
         self._budget.charge(input_tokens + output_tokens)
         self._record(model, input_tokens, output_tokens, duration_ms)
 

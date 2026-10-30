@@ -25,6 +25,8 @@ class FakeService:
     # One entry per request: (status, delay seconds); the last entry repeats.
     script: list[tuple[int, float]] = field(default_factory=lambda: [(200, 0.0)])
     requests: list[dict[str, str]] = field(default_factory=list)
+    # Sent with error responses; the default keeps retries in tests fast.
+    retry_headers: dict[str, str] = field(default_factory=lambda: {"retry-after-ms": "1"})
 
 
 def completion(model: str) -> bytes:
@@ -58,7 +60,9 @@ def service() -> Iterator[FakeService]:
             time.sleep(delay)
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
-            self.send_header("retry-after-ms", "1")
+            if status != 200:
+                for name, value in fake.retry_headers.items():
+                    self.send_header(name, value)
             self.end_headers()
             with contextlib.suppress(BrokenPipeError):  # the client gave up after its timeout
                 self.wfile.write(completion(body["model"]) if status == 200 else b'{"error": {}}')
@@ -183,3 +187,18 @@ def test_a_slow_service_times_out_after_the_retries(
 
     assert len(service.requests) == 3
     assert time.monotonic() - started < 10
+
+
+def test_the_client_waits_as_long_as_retry_after_asks(
+    service: FakeService, db: tuple[Path, int]
+) -> None:
+    # The client's own backoff for two retries stays under about 1.5 seconds.
+    service.script = [(429, 0.0), (429, 0.0), (200, 0.0)]
+    service.retry_headers = {"Retry-After": "2"}
+    meter = UsageMeter(db[0], db[1], "security", TokenBudget(500_000))
+
+    started = time.monotonic()
+    chat_model(endpoint(service)).invoke("review", config={"callbacks": [meter]})
+
+    assert len(service.requests) == 3
+    assert time.monotonic() - started >= 3.5
