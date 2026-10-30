@@ -64,19 +64,3 @@ def estimate_tokens(text: str) -> int:
         return _character_estimate(text)
     # PR text may contain special-token markers; they are counted as ordinary text.
     return len(encoding.encode(text, disallowed_special=()))
-
-
-def head_tokens(text: str, limit: int) -> str:
-    """The start of `text`, at most `limit` tokens long."""
-    encoding = _encoding()
-    if encoding is None:
-        head = text[: limit * 4]
-        while head and _character_estimate(head) > limit:
-            head = head[: len(head) * 9 // 10]
-        return head
-    tokens = encoding.encode(text, disallowed_special=())
-    if len(tokens) <= limit:
-        return text
-    head = encoding.decode(tokens[:limit])
-    # A token boundary can split a character; drop the replacement character it leaves.
-    return head.rstrip("�")
