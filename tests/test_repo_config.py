@@ -108,7 +108,8 @@ def test_skip_paths_add_to_the_defaults_and_cannot_remove_them() -> None:
 
 
 @pytest.mark.parametrize(
-    "path", ["/etc/passwd", "../other-repo/rules.md", "docs/../../x.md", "docs\\rules.md"]
+    "path",
+    ["/etc/passwd", "../other-repo/rules.md", "docs/../../x.md", "docs\\rules.md", "", "  ", "."],
 )
 def test_skill_additions_must_stay_inside_the_repository(path: str) -> None:
     assert_rejected(f"skill_additions: {{security: '{path}'}}\n", "skill_additions", "security")

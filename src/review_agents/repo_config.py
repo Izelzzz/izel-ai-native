@@ -73,8 +73,8 @@ class CustomRule(_Strict):
 
 
 def _inside_repository(path: str) -> str:
-    parts = PurePosixPath(path).parts
-    if path.startswith("/") or "\\" in path or ".." in parts:
+    parts = PurePosixPath(path.strip()).parts
+    if not parts or path.startswith("/") or "\\" in path or ".." in parts:
         raise ValueError("must be a relative path inside the repository")
     return path
 
