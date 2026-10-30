@@ -2,12 +2,13 @@ import inspect
 import json
 import os
 import threading
+import time
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
-from gitrepo import Upstream
+from gitrepo import Upstream, install_fake_git
 
 from review_agents.mirror import MirrorStore
 from review_agents.repo_config import DEFAULT_SKIP_PATHS, MAX_FILE_BYTES
@@ -239,3 +240,19 @@ def test_tools_only_accept_a_full_commit_sha(checkout: tuple[Path, str], commit:
 def test_list_dir_refuses_a_skipped_directory(tools: RepoTools) -> None:
     with pytest.raises(ToolError, match="skip list"):
         tools.list_dir("fixtures")
+
+
+def test_a_hanging_git_command_is_killed_and_reported_to_the_agent(
+    checkout: tuple[Path, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git_dir, head = checkout
+    monkeypatch.setenv("PATH", os.environ["PATH"])  # restored after the test
+    install_fake_git(tmp_path / "fakebin", "exec sleep 30")
+    tools = RepoTools(git_dir, "octo/app", head, [], git_timeout=0.3)
+    read = agent_tools(tools, ToolBudget(limit=25))["read_file"]
+
+    started = time.monotonic()
+    result = read("src/app.py")
+
+    assert result.startswith("error: git cat-file timed out")
+    assert time.monotonic() - started < 3

@@ -40,3 +40,17 @@ class Upstream:
         git(self.work, "commit", "-q", "-m", message)
         git(self.work, "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
         return git(self.work, "rev-parse", "HEAD")
+
+
+def install_fake_git(bin_dir: Path, body: str) -> None:
+    """Put a `git` wrapper first on PATH; `$REAL_GIT` runs the real one."""
+    import os
+    import shutil
+
+    real = shutil.which("git")
+    assert real
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    script = bin_dir / "git"
+    script.write_text(f'#!/bin/sh\nREAL_GIT="{real}"\n{body}\n', encoding="utf-8")
+    script.chmod(0o755)
+    os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"

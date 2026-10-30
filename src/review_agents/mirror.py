@@ -3,14 +3,27 @@
 import base64
 import fcntl
 import os
+import random
 import re
+import signal
 import subprocess
-from collections.abc import Iterator, Sequence
+import time
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
 _REPO_NAME = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
+
+FETCH_TIMEOUT_SECONDS = 300.0
+FETCH_ATTEMPTS = 3
+# Errors a later attempt can get past. Authentication, permission and missing-ref
+# errors are not here: retrying them only delays the failure.
+_TRANSIENT_FETCH_ERRORS = re.compile(
+    r"Could not resolve host|Connection reset|Connection refused|Connection timed out"
+    r"|Failed to connect|Operation timed out|early EOF|unexpected disconnect|RPC failed"
+    r"|returned error: 5\d\d",
+)
 
 
 class GitError(RuntimeError):
@@ -18,6 +31,10 @@ class GitError(RuntimeError):
 
 
 class MissingCommitError(GitError):
+    pass
+
+
+class GitTimeoutError(GitError):
     pass
 
 
@@ -62,27 +79,50 @@ def run_git(
     env: dict[str, str] | None = None,
     secret: str | None = None,
     ok_codes: tuple[int, ...] = (0,),
+    timeout: float | None = None,
 ) -> bytes:
-    result = subprocess.run(  # noqa: S603 - fixed git binary, arguments are not shell-parsed
+    # Its own process group, so a timeout also kills what git started, such as the
+    # HTTPS remote helper during a fetch.
+    process = subprocess.Popen(  # noqa: S603 - fixed git binary, arguments are not shell-parsed
         ["git", f"--git-dir={git_dir}", *args],  # noqa: S607
-        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         env=env or git_env(),
-        check=False,
+        start_new_session=True,
     )
-    if result.returncode not in ok_codes:
-        message = result.stderr.decode("utf-8", "replace").strip()
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+        raise GitTimeoutError(f"git {args[0]} timed out after {timeout:g}s") from None
+    except BaseException:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+        raise
+    if process.returncode not in ok_codes:
+        message = stderr.decode("utf-8", "replace").strip()
         if secret:
             message = message.replace(secret, "***")
         raise GitError(f"git {args[0]} failed: {message}")
-    return result.stdout
+    return stdout
 
 
 class MirrorStore:
     """Bare mirrors under `root`, one per repository, reused across reviews."""
 
-    def __init__(self, root: Path, remote_base: str = "https://github.com") -> None:
+    def __init__(
+        self,
+        root: Path,
+        remote_base: str = "https://github.com",
+        fetch_timeout: float = FETCH_TIMEOUT_SECONDS,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self._root = root
         self._remote_base = remote_base.rstrip("/")
+        self._fetch_timeout = fetch_timeout
+        self._sleep = sleep
 
     def git_dir(self, repo: str) -> Path:
         owner, name = check_repo_name(repo).split("/")
@@ -122,11 +162,36 @@ class MirrorStore:
             if not (git_dir / "HEAD").exists():
                 run_git(git_dir, "init", "--bare", "--quiet")
             refspecs = [f"+{ref}:{ref}" for ref in refs]
-            run_git(git_dir, "fetch", "--quiet", "--no-tags", url, *refspecs, env=env, secret=token)
+            self._fetch(git_dir, [url, *refspecs], env, token)
             for sha in commits:
                 if not self.has_commit(git_dir, sha):
                     raise MissingCommitError(f"{repo} has no commit {sha} after fetching")
         return git_dir
+
+    def _fetch(
+        self, git_dir: Path, args: list[str], env: dict[str, str], token: str | None
+    ) -> None:
+        """Fetch, retrying transient failures with exponential backoff and jitter."""
+        for attempt in range(1, FETCH_ATTEMPTS + 1):
+            try:
+                run_git(
+                    git_dir,
+                    "fetch",
+                    "--quiet",
+                    "--no-tags",
+                    *args,
+                    env=env,
+                    secret=token,
+                    timeout=self._fetch_timeout,
+                )
+                return
+            except GitError as exc:
+                transient = isinstance(exc, GitTimeoutError) or bool(
+                    _TRANSIENT_FETCH_ERRORS.search(str(exc))
+                )
+                if not transient or attempt == FETCH_ATTEMPTS:
+                    raise
+            self._sleep(2**attempt + random.random())  # noqa: S311 - jitter, not security
 
     @staticmethod
     def has_commit(git_dir: Path, sha: str) -> bool:

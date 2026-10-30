@@ -13,9 +13,16 @@ from collections.abc import Callable, Sequence
 from functools import cache
 from pathlib import Path, PurePosixPath
 
-from review_agents.mirror import GitError, check_commit_sha, check_repo_name, run_git
+from review_agents.mirror import (
+    GitError,
+    GitTimeoutError,
+    check_commit_sha,
+    check_repo_name,
+    run_git,
+)
 from review_agents.repo_config import MAX_FILE_BYTES
 
+GIT_TIMEOUT_SECONDS = 30.0
 MAX_SEARCH_MATCHES = 100
 MAX_LOG_ENTRIES = 50
 MAX_ISSUE_CHARS = 20_000
@@ -75,6 +82,7 @@ class RepoTools:
         skip_paths: Sequence[str],
         token: str | None = None,
         api_base: str = "https://api.github.com",
+        git_timeout: float = GIT_TIMEOUT_SECONDS,
     ) -> None:
         self._git_dir = git_dir
         self._repo = check_repo_name(repo)
@@ -82,12 +90,17 @@ class RepoTools:
         self._skip_paths = tuple(skip_paths)
         self._token = token
         self._api_base = api_base.rstrip("/")
+        self._git_timeout = git_timeout
 
     def is_skipped(self, path: str) -> bool:
         return any(glob_match(pattern, path) for pattern in self._skip_paths)
 
-    def _git(self, *args: str) -> bytes:
-        return run_git(self._git_dir, *args)
+    def _git(self, *args: str, ok_codes: tuple[int, ...] = (0,)) -> bytes:
+        try:
+            return run_git(self._git_dir, *args, ok_codes=ok_codes, timeout=self._git_timeout)
+        except GitTimeoutError as exc:
+            # Not a GitError for the callers below, which read those as "not found".
+            raise ToolError(str(exc)) from None
 
     def read_file(self, path: str, start_line: int = 1, end_line: int | None = None) -> str:
         """Read a text file at the reviewed commit, optionally a 1-based line range."""
@@ -138,8 +151,7 @@ class RepoTools:
             raise ToolError("give a pattern to search for")
         try:
             # Exit code 1 means no match.
-            output = run_git(
-                self._git_dir,
+            output = self._git(
                 "grep",
                 "-n",
                 "-I",

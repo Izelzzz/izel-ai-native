@@ -1,11 +1,15 @@
+import os
 import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from gitrepo import Upstream, git
+from gitrepo import Upstream, git, install_fake_git
 
 from review_agents.mirror import (
     GitError,
+    GitTimeoutError,
     MirrorStore,
     MissingCommitError,
     check_repo_name,
@@ -144,3 +148,107 @@ def test_concurrent_syncs_of_one_repository_both_succeed(
         thread.join()
 
     assert errors == []
+
+
+@pytest.fixture
+def fake_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[[str], Path]:
+    monkeypatch.setenv("PATH", os.environ["PATH"])  # restored after the test
+    counter = tmp_path / "fetch-count"
+
+    def install(on_fetch: str) -> Path:
+        install_fake_git(
+            tmp_path / "fakebin",
+            'case " $* " in *" fetch "*)\n'
+            f'  n=$(cat "{counter}" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "{counter}"\n'
+            f"  {on_fetch}\n"
+            ";; esac\n"
+            'exec "$REAL_GIT" "$@"',
+        )
+        return counter
+
+    return install
+
+
+def store_with_fake_sleep(
+    tmp_path: Path, upstream: Upstream, **kwargs: float
+) -> tuple[MirrorStore, list[float]]:
+    slept: list[float] = []
+    store = MirrorStore(
+        tmp_path / "repos", remote_base=str(upstream.base), sleep=slept.append, **kwargs
+    )
+    return store, slept
+
+
+def test_a_transient_fetch_failure_is_retried_with_backoff(
+    tmp_path: Path, upstream: Upstream, fake_git: Callable[[str], Path]
+) -> None:
+    head = upstream.commit({"a.py": "x = 1\n"}, "init")
+    counter = fake_git(
+        'if [ "$n" -le 2 ]; then echo "fatal: unable to access: Could not resolve host:'
+        ' github.com" >&2; exit 128; fi'
+    )
+    store, slept = store_with_fake_sleep(tmp_path, upstream)
+
+    git_dir = store.sync("octo/app", MAIN, [head], token=None)
+
+    assert store.has_commit(git_dir, head)
+    assert counter.read_text().strip() == "3"
+    assert len(slept) == 2
+    assert 2 <= slept[0] < 3
+    assert 4 <= slept[1] < 5
+
+
+def test_a_permission_error_is_not_retried(
+    tmp_path: Path, upstream: Upstream, fake_git: Callable[[str], Path]
+) -> None:
+    upstream.commit({"a.py": "x = 1\n"}, "init")
+    counter = fake_git(
+        'echo "fatal: unable to access: The requested URL returned error: 403" >&2; exit 128'
+    )
+    store, slept = store_with_fake_sleep(tmp_path, upstream)
+
+    with pytest.raises(GitError, match="403"):
+        store.sync("octo/app", MAIN, [], token=None)
+
+    assert counter.read_text().strip() == "1"
+    assert slept == []
+
+
+def test_a_hanging_fetch_is_killed_and_retried_then_fails(
+    tmp_path: Path, upstream: Upstream, fake_git: Callable[[str], Path]
+) -> None:
+    upstream.commit({"a.py": "x = 1\n"}, "init")
+    counter = fake_git("exec sleep 30")
+    store, slept = store_with_fake_sleep(tmp_path, upstream, fetch_timeout=0.3)
+
+    started = time.monotonic()
+    with pytest.raises(GitTimeoutError):
+        store.sync("octo/app", MAIN, [], token=None)
+
+    assert time.monotonic() - started < 5
+    assert counter.read_text().strip() == "3"
+    assert len(slept) == 2
+
+
+def test_a_timeout_also_kills_the_processes_git_started(
+    tmp_path: Path, upstream: Upstream, fake_git: Callable[[str], Path]
+) -> None:
+    # git fetch runs a remote helper as a child process; it must not outlive the timeout.
+    upstream.commit({"a.py": "x = 1\n"}, "init")
+    pid_file = tmp_path / "helper.pid"
+    fake_git(f'sleep 30 & echo $! > "{pid_file}"; wait')
+    store, _ = store_with_fake_sleep(tmp_path, upstream, fetch_timeout=0.3)
+
+    with pytest.raises(GitTimeoutError):
+        store.sync("octo/app", MAIN, [], token=None)
+
+    helper = int(pid_file.read_text())
+    for _ in range(50):
+        try:
+            os.kill(helper, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        os.kill(helper, 9)
+        pytest.fail("the helper process outlived the timeout")
