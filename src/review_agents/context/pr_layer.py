@@ -1,7 +1,8 @@
-"""The pull request layer: the PR's intent, its complete changes, and the code around them.
+"""The pull request layer: the PR's intent and its complete changes.
 
 Read from the PR's own commits. Nothing in the changes is dropped (decision D-008):
-files the skip rules exclude are still listed, with the reason.
+files the skip rules exclude are still listed, with the reason. The code around the
+changes is left to the agents and their tools unless asked for (decision D-015).
 """
 
 import re
@@ -20,7 +21,6 @@ GIT_TIMEOUT_SECONDS = 30.0
 # A name used in more places than this is too generic to expand usefully; the agent
 # can still search for it.
 MAX_USAGES_PER_NAME = 30
-MAX_LINKED_ISSUES = 10
 TYPE_DEFINITION_LINES = 20
 
 NO_SPEC_NOTE = "No specification found; review against the PR description only."
@@ -80,10 +80,6 @@ class PrLayer:
     excerpts: list[Excerpt]
     previous_findings: list[str]
     notes: list[str] = field(default_factory=list)
-
-    @property
-    def changed_names(self) -> list[str]:
-        return sorted({e.name for e in self.excerpts if e.kind != "definition"})
 
     def render(self) -> str:
         req = self.request
@@ -218,7 +214,7 @@ def _grep_blocks(output: str, head: str) -> dict[str, list[str]]:
     return blocks
 
 
-def surrounding_code(
+def find_surrounding_code(
     git: _Git,
     head: str,
     names: set[str],
@@ -258,17 +254,12 @@ def surrounding_code(
 
 
 def linked_issues(tools: RepoTools, body: str, notes: list[str]) -> list[tuple[int, str]]:
+    # Every linked issue is read in full (decision D-016).
     numbers = list(dict.fromkeys(int(n) for n in _ISSUE_REF.findall(body)))
-    if len(numbers) > MAX_LINKED_ISSUES:
-        notes.append(
-            f"The description links {len(numbers)} issues;"
-            f" the first {MAX_LINKED_ISSUES} are included."
-        )
-        numbers = numbers[:MAX_LINKED_ISSUES]
     issues = []
     for number in numbers:
         try:
-            issues.append((number, tools.read_issue(number)))
+            issues.append((number, tools.issue_text(number)))
         except ToolError as exc:
             notes.append(str(exc))
     return issues
@@ -325,7 +316,9 @@ def build_pr_layer(
     config: RepoConfig,
     token: str | None = None,
     api_base: str = "https://api.github.com",
+    surrounding_code: bool = False,
 ) -> PrLayer:
+    """`surrounding_code` also preloads the callers, tests and types of changed code."""
     check_repo_name(request.repo)
     for sha in (request.base_sha, request.head_sha, request.previous_head):
         if sha is not None:
@@ -338,21 +331,22 @@ def build_pr_layer(
     files = changed_files(git, request.base_sha, head, skip)
     since = request.previous_head or request.base_sha
     diffs = {}
-    names: set[str] = set()
-    types: set[str] = set()
     for changed in files:
         if changed.skipped:
             continue
         patch = file_diff(git, since, head, changed, three_dot=request.previous_head is None)
         if patch:
             diffs[changed.path] = patch
-            names |= names_in_patch(patch)
-            types |= types_in_patch(patch)
 
     tools = RepoTools(git_dir, request.repo, head, skip, token=token, api_base=api_base)
     issues = linked_issues(tools, request.body, notes)
     specs = find_specs(git, head, config, files, [request.body, *(t for _, t in issues)])
-    excerpts = surrounding_code(git, head, names, types, {f.path for f in files}, skip, notes)
+    excerpts: list[Excerpt] = []
+    if surrounding_code:
+        names = set().union(*map(names_in_patch, diffs.values()))
+        types = set().union(*map(types_in_patch, diffs.values()))
+        changed_paths = {f.path for f in files}
+        excerpts = find_surrounding_code(git, head, names, types, changed_paths, skip, notes)
     return PrLayer(
         request=request,
         issues=issues,
