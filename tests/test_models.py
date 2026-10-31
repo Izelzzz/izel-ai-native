@@ -33,9 +33,11 @@ class FakeService:
     requests: list[dict[str, str]] = field(default_factory=list)
     # Sent with error responses; the default keeps retries in tests fast.
     retry_headers: dict[str, str] = field(default_factory=lambda: {"retry-after-ms": "1"})
+    # Input tokens the service reports as read from its prompt cache.
+    cached: int = 0
 
 
-def completion(model: str) -> bytes:
+def completion(model: str, cached: int = 0) -> bytes:
     return json.dumps(
         {
             "id": "c1",
@@ -49,7 +51,12 @@ def completion(model: str) -> bytes:
                     "finish_reason": "stop",
                 }
             ],
-            "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
+            "usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 7,
+                "total_tokens": 18,
+                "prompt_tokens_details": {"cached_tokens": cached},
+            },
         }
     ).encode()
 
@@ -71,7 +78,9 @@ def service() -> Iterator[FakeService]:
                     self.send_header(name, value)
             self.end_headers()
             with contextlib.suppress(BrokenPipeError):  # the client gave up after its timeout
-                self.wfile.write(completion(body["model"]) if status == 200 else b'{"error": {}}')
+                self.wfile.write(
+                    completion(body["model"], fake.cached) if status == 200 else b'{"error": {}}'
+                )
 
         def log_message(self, *args: object) -> None:
             pass
@@ -102,10 +111,11 @@ def endpoint(service: FakeService, key: str | None = "sk-test") -> ModelEndpoint
     )
 
 
-def usage_rows(db_path: Path) -> list[tuple[str, str, int, int]]:
+def usage_rows(db_path: Path) -> list[tuple[str, str, int, int, int]]:
     with closing(connect(db_path)) as conn:
         rows = conn.execute(
-            "SELECT agent, model, input_tokens, output_tokens FROM usage ORDER BY id"
+            "SELECT agent, model, input_tokens, cached_input_tokens, output_tokens FROM usage"
+            " ORDER BY id"
         ).fetchall()
     return [tuple(row) for row in rows]
 
@@ -123,8 +133,22 @@ def test_a_call_reaches_the_service_and_records_its_usage(
 
     assert reply.content == "no findings"
     assert service.requests == [{"path": "/v1/chat/completions", "auth": auth}]
-    assert usage_rows(db[0]) == [("security", "finder-model", 11, 7)]
+    assert usage_rows(db[0]) == [("security", "finder-model", 11, 0, 7)]
     assert budget.used == 18
+
+
+def test_cached_input_counts_a_tenth_against_the_budget(
+    service: FakeService, db: tuple[Path, int]
+) -> None:
+    service.cached = 10
+    budget = TokenBudget(500_000)
+    meter = UsageMeter(budget, review_usage(db[0], db[1], "security"))
+
+    chat_model(endpoint(service)).invoke("review", config={"callbacks": [meter]})
+
+    # 1 uncached input + 10 cached at a tenth + 7 output.
+    assert budget.used == 9
+    assert usage_rows(db[0]) == [("security", "finder-model", 11, 10, 7)]
 
 
 def test_no_call_is_made_once_the_budget_is_used_up(
