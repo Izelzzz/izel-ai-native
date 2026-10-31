@@ -8,6 +8,7 @@ changes is left to the agents and their tools unless asked for (decision D-015).
 import re
 import sqlite3
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -15,24 +16,27 @@ from review_agents.context.markup import untrusted
 from review_agents.context.tokens import estimate_tokens
 from review_agents.mirror import GitError, check_commit_sha, check_repo_name, run_git
 from review_agents.repo_config import RepoConfig
-from review_agents.tools import RepoTools, ToolError, glob_match
+from review_agents.tools import MAX_ISSUE_CHARS, RepoTools, ToolError, glob_match
 
 GIT_TIMEOUT_SECONDS = 30.0
 # A name used in more places than this is too generic to expand usefully; the agent
 # can still search for it.
 MAX_USAGES_PER_NAME = 30
+# A safety net against a description that links thousands of issues (decision D-017).
+MAX_LINKED_ISSUES = 100
+ISSUE_FETCH_WORKERS = 8
 TYPE_DEFINITION_LINES = 20
 
 NO_SPEC_NOTE = "No specification found; review against the PR description only."
 
 _ISSUE_REF = re.compile(r"(?<![\w/#])#(\d+)\b")
-_DEFINITION = re.compile(
+DEFINITION = re.compile(
     r"^\s*(?:export\s+)?(?:default\s+)?(?:public\s+|private\s+|protected\s+)?(?:static\s+)?"
     r"(?:async\s+)?(?:def|class|function|interface|type|struct|enum|trait|fn)\s+([A-Za-z_]\w*)"
     r"|^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)"
 )
 _TYPE_NAME = re.compile(r"\b([A-Z][A-Za-z0-9_]*[a-z][A-Za-z0-9_]*)\b")
-_TEST_PATH = re.compile(
+TEST_PATH = re.compile(
     r"(^|/)(tests?|spec|specs|__tests__)/|(^|/)test_[^/]+$|_test\.[^/]+$|\.(test|spec)\.[^/]+$"
 )
 
@@ -80,6 +84,9 @@ class PrLayer:
     excerpts: list[Excerpt]
     previous_findings: list[str]
     notes: list[str] = field(default_factory=list)
+    # Set when a large PR is reviewed in groups: what the other groups change (D-008).
+    group: str | None = None
+    signatures_elsewhere: list[str] = field(default_factory=list)
 
     def render(self) -> str:
         req = self.request
@@ -110,6 +117,11 @@ class PrLayer:
         if self.previous_findings:
             parts.append("## Findings still open from earlier rounds")
             parts.append(untrusted("previous-findings", "\n".join(self.previous_findings)))
+        if self.group:
+            parts.append(f"## Review group\n{self.group}")
+        if self.signatures_elsewhere:
+            parts.append("## Definitions changed elsewhere in this PR")
+            parts.append(untrusted("other-groups", "\n".join(self.signatures_elsewhere)))
         if self.notes:
             parts.append("## Notes")
             parts.append("\n".join(f"- {n}" for n in self.notes))
@@ -166,9 +178,9 @@ def names_in_patch(patch: str) -> set[str]:
     for line in patch.splitlines():
         if line.startswith("@@"):
             in_hunk = True
-            match = _DEFINITION.search(line.split("@@", 2)[-1])
+            match = DEFINITION.search(line.split("@@", 2)[-1])
         elif in_hunk and line[:1] in "+- ":
-            match = _DEFINITION.search(line[1:])
+            match = DEFINITION.search(line[1:])
         else:
             continue
         if match:
@@ -239,7 +251,7 @@ def find_surrounding_code(
         output = git("grep", "-n", "-I", "-w", "-W", "--null", "-e", name, head, ok_codes=(0, 1))
         for path, blocks in sorted(_grep_blocks(output, head).items()):
             if keep(path):
-                kind = "test" if _TEST_PATH.search(path) else "usage"
+                kind = "test" if TEST_PATH.search(path) else "usage"
                 excerpts.append(Excerpt(kind, name, path, "\n...\n".join(blocks)))
     for type_name in sorted(types - names):
         pattern = rf"(class|interface|type|struct|enum|trait)\s+{type_name}\b"
@@ -254,14 +266,31 @@ def find_surrounding_code(
 
 
 def linked_issues(tools: RepoTools, body: str, notes: list[str]) -> list[tuple[int, str]]:
-    # Every linked issue is read in full (decision D-016).
+    # Each linked issue is read in full (decision D-016).
     numbers = list(dict.fromkeys(int(n) for n in _ISSUE_REF.findall(body)))
-    issues = []
-    for number in numbers:
+    if len(numbers) > MAX_LINKED_ISSUES:
+        notes.append(
+            f"The description links {len(numbers)} issues; {len(numbers) - MAX_LINKED_ISSUES}"
+            " more were not read; read_issue fetches one, its body cut at"
+            f" {MAX_ISSUE_CHARS:,} characters."
+        )
+        numbers = numbers[:MAX_LINKED_ISSUES]
+
+    def fetch(number: int) -> str | ToolError:
         try:
-            issues.append((number, tools.issue_text(number)))
+            return tools.issue_text(number)
         except ToolError as exc:
-            notes.append(str(exc))
+            return exc
+
+    # Fetched side by side: one at a time, 100 slow answers would take many minutes.
+    with ThreadPoolExecutor(max_workers=ISSUE_FETCH_WORKERS) as pool:
+        results = list(pool.map(fetch, numbers))
+    issues = []
+    for number, result in zip(numbers, results, strict=True):
+        if isinstance(result, ToolError):
+            notes.append(str(result))
+        else:
+            issues.append((number, result))
     return issues
 
 
