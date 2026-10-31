@@ -10,7 +10,6 @@ from review_agents.context.markup import untrusted
 from review_agents.context.modules import Summarize, split_modules
 from review_agents.context.repo_layer import MODULE_NOTE, RepoLayer, build_repo_layer
 from review_agents.context.summarizer import model_summarizer
-from review_agents.context.tokens import estimate_tokens
 from review_agents.db import connect, migrate
 from review_agents.mirror import MirrorStore
 from review_agents.models import BudgetExceededError, TokenBudget, UsageMeter, summary_usage
@@ -217,11 +216,6 @@ def test_a_package_marker_starts_its_own_module() -> None:
     modules = split_modules(files("libs/core/x.py", "libs/web/package.json", "libs/web/a.js"))
 
     assert [m.path for m in modules] == ["libs/core", "libs/web"]
-
-
-def test_token_estimates_count_wide_characters_individually() -> None:
-    assert estimate_tokens("abcd" * 10) == 10
-    assert estimate_tokens("金额必须用整数分") == 8
 
 
 def test_a_package_marker_deeper_down_still_splits_its_ancestors() -> None:

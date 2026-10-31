@@ -143,6 +143,11 @@ jobs:
         run: docker run --rm -i "$HADOLINT_IMAGE" < Dockerfile
       - name: build
         run: docker compose build
+      - name: token encoding is baked in
+        # With no network the encoding must come from the image, not a download.
+        run: >-
+          docker run --rm --network none review-agents:local
+          python -c "from review_agents.context.tokens import _encoding; assert _encoding() is not None"
       - name: trivy
         run: |
           tarball="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"

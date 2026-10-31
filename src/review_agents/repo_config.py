@@ -57,12 +57,18 @@ class Dimensions(_Strict):
 class Limits(_Strict):
     """Each limit defaults to the service ceiling and can only be lowered."""
 
-    tokens_per_review: int = Field(default=500_000, ge=1, le=500_000)
+    # The ceiling is the service setting `tokens_per_review` (decision D-009); a value
+    # above it is lowered to it, since the repository cannot see what it is.
+    tokens_per_review: int | None = Field(default=None, ge=1)
     tool_calls_per_agent: int = Field(default=25, ge=1, le=25)
     review_minutes: int = Field(default=15, ge=1, le=15)
     full_review_rounds: int = Field(default=3, ge=1, le=3)
     replies_per_thread: int = Field(default=10, ge=1, le=10)
     nits_per_report: int = Field(default=5, ge=0, le=5)
+
+    def token_budget(self, ceiling: int) -> int:
+        """Tokens one review may use: the service ceiling, unless this repository lowers it."""
+        return min(self.tokens_per_review or ceiling, ceiling)
 
 
 class CustomRule(_Strict):

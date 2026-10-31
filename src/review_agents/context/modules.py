@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
 
 from review_agents.context.git import Entry, Snapshot
-from review_agents.context.tokens import estimate_tokens
+from review_agents.context.tokens import estimate_tokens, head_tokens
 from review_agents.models import BudgetExceededError
 
 log = logging.getLogger(__name__)
@@ -165,7 +165,7 @@ def sample_module(snapshot: Snapshot, module: Module) -> str:
         remaining = _SAMPLE_TOKENS - used
         if remaining <= 200:
             break
-        excerpt = text[: remaining * 4]
+        excerpt = head_tokens(text, remaining)
         parts.append(f"--- {entry.path} ---\n{excerpt}")
         used += estimate_tokens(excerpt)
     return "\n\n".join(parts)
