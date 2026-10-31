@@ -130,6 +130,11 @@ def issue_api() -> Iterator[tuple[str, list[dict[str, str]]]]:
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(payload)
+            elif self.path.endswith(("/issues/20", "/issues/21")):
+                # A proxy's HTML error page, and JSON that is not an issue.
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"<html>bad gateway</html>" if "20" in self.path else b"{}")
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -157,6 +162,9 @@ def test_read_issue_returns_the_issue_using_the_token(
     assert seen == [{"path": "/repos/octo/app/issues/12", "auth": "Bearer fake-token"}]
     with pytest.raises(ToolError, match="HTTP 404"):
         tools.read_issue(13)
+    for number in (20, 21):
+        with pytest.raises(ToolError, match="not an issue"):
+            tools.issue_text(number)
 
 
 @pytest.mark.parametrize(

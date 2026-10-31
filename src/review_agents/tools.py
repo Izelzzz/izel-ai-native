@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Sequence
 from functools import cache
+from http.client import HTTPException
 from pathlib import Path, PurePosixPath
 
 from review_agents.mirror import (
@@ -201,13 +202,17 @@ class RepoTools:
         try:
             with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310
                 issue = json.load(response)
+            body = (issue.get("body") or "")[:max_chars]
+            labels = ", ".join(label["name"] for label in issue.get("labels", []))
+            title, state = issue["title"], issue["state"]
         except urllib.error.HTTPError as exc:
             raise ToolError(f"issue #{number} could not be read: HTTP {exc.code}") from None
         except (urllib.error.URLError, TimeoutError):
             raise ToolError(f"issue #{number} could not be read: GitHub is unreachable") from None
-        body = (issue.get("body") or "")[:max_chars]
-        labels = ", ".join(label["name"] for label in issue.get("labels", []))
-        return f"#{number} {issue['title']} [{issue['state']}] labels: {labels or '-'}\n\n{body}"
+        # A proxy's error page, a cut-off answer or JSON of another shape.
+        except (ValueError, KeyError, TypeError, AttributeError, OSError, HTTPException):
+            raise ToolError(f"issue #{number} could not be read: not an issue") from None
+        return f"#{number} {title} [{state}] labels: {labels or '-'}\n\n{body}"
 
 
 class ToolBudget:
