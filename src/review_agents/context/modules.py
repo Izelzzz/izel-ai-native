@@ -140,6 +140,7 @@ class ModuleSummary:
     path: str
     stats: str
     summary: str | None  # None until a summary exists; the stats stand in for it
+    cache_key: str = ""  # where the summary is cached, so stale ones can be pruned
 
     def render(self) -> str:
         if self.summary is None:
@@ -210,9 +211,9 @@ def module_summaries(
                     " VALUES (?, 'repo', ?, ?, ?)",
                     (repo, key, json.dumps({"summary": summary}), estimate_tokens(summary)),
                 )
-        results.append(ModuleSummary(module.path, module.stats(), summary))
+        results.append(ModuleSummary(module.path, module.stats(), summary, key))
     return results
 
 
 def to_json(summaries: list[ModuleSummary]) -> list[dict[str, str | None]]:
-    return [asdict(s) for s in summaries]
+    return [{k: v for k, v in asdict(s).items() if k != "cache_key"} for s in summaries]

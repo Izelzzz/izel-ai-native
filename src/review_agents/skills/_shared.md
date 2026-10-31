@@ -1,10 +1,10 @@
 # Rules every dimension follows
 
-The pipeline appends these rules to each dimension's SKILL.md. A dimension file never restates or overrides them.
+Every dimension reads these rules first; its own SKILL.md comes after them. A dimension file never restates or overrides them.
 
 ## What you are reviewing
 
-You review one pull request. You get its description, its linked issue and spec when they exist, the diff, the code that calls or is called by the changed code, and the repository's own conventions. You can read more files with read-only tools when the context is not enough. Read the code before you claim anything about it.
+You review one pull request. You get its description, its linked issue and spec when they exist, the full list of changed files, the diff with each changed function in full, and the repository's conventions, directory tree and module summaries. Files matching a skip rule are listed by name only. From the second round on, the diff covers only the commits since the previous review. Unless the context has a "Code around the changes" section, find the callers, callees, types, tests and configuration the change touches with your read-only tools. Read the code before you claim anything about it.
 
 Judge the change against what it is for. The PR description and the linked issue state the usage scenario. A finding is about what goes wrong in that scenario, or in one a real caller already reaches.
 
