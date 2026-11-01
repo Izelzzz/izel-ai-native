@@ -70,6 +70,7 @@ def test_everything_optional_is_off_by_default() -> None:
     assert settings.shared_secret is None
     assert settings.observability.enabled is False
     assert settings.observability.content == "metadata"
+    assert settings.surrounding_code is False
 
 
 def test_the_review_token_budget_is_a_service_setting(monkeypatch: pytest.MonkeyPatch) -> None:

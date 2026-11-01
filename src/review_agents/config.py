@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     # design limit; to be tuned from measurements on repositories of different sizes (#17).
     summary_tokens_per_build: int = Field(default=3_000_000, gt=0)
 
+    # Preload the callers, tests and types of changed code into the PR layer. Off: the
+    # agents look them up with their tools (decision D-015); kept for comparison in #17
+    # and set by whoever runs the service, never by a reviewed repository (D-017).
+    surrounding_code: bool = False
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "review-agents.sqlite3"
