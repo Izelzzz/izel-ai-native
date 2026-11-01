@@ -1,13 +1,13 @@
 import threading
 import time
 from contextlib import closing
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from gitrepo import Upstream
 
 from review_agents.context.cache import prune, repo_layer_for_review
+from review_agents.context.modules import SUMMARY_VERSION
 from review_agents.db import connect, migrate
 from review_agents.mirror import MirrorStore
 
@@ -90,38 +90,33 @@ def test_concurrent_reviews_of_one_repository_build_its_layer_once(setup: Setup)
     assert sorted(hits).count("context.repo_layer:ok") == 1
 
 
-def test_pruning_keeps_the_latest_layers_and_only_current_module_summaries(setup: Setup) -> None:
+def test_pruning_keeps_the_latest_layers_and_every_current_format_summary(setup: Setup) -> None:
     for i in range(5):
         setup.upstream.commit({"README.md": f"# Shop {i}\n"}, f"edit {i}")
         setup.sync()
         setup.build(setup.review(), summarize=lambda path, source: "summary")
+    old_format = "module:0:payments:abc"
+    gone_module = f"module:{SUMMARY_VERSION}:removed/module:def"
     with closing(connect(setup.db_path)) as conn:
-        conn.execute(
-            "INSERT INTO context_cache (repo, layer, cache_key, content, tokens)"
-            " VALUES ('octo/shop', 'repo', 'module:1:old:abc', '{}', 1)"
-        )
-        conn.execute(
-            "INSERT INTO context_cache (repo, layer, cache_key, content, tokens)"
-            " VALUES ('octo/other', 'repo', 'layer:keep-me', '{}', 1)"
-        )
-        layer = setup.build(setup.review())
+        for repo, key in (
+            ("octo/shop", old_format),
+            ("octo/shop", gone_module),
+            ("octo/other", "layer:keep-me"),
+        ):
+            conn.execute(
+                "INSERT INTO context_cache (repo, layer, cache_key, content, tokens)"
+                " VALUES (?, 'repo', ?, '{}', 1)",
+                (repo, key),
+            )
 
-        prune(conn, "octo/shop", layer, keep_layers=2)
+        prune(conn, "octo/shop", keep_layers=2)
 
-        keys = [
-            (row["repo"], row["cache_key"].split(":")[0])
-            for row in conn.execute("SELECT repo, cache_key FROM context_cache")
-        ]
-    assert keys.count(("octo/shop", "layer")) == 2
-    assert keys.count(("octo/shop", "module")) == 2  # "." and "payments" at the current commit
-    assert ("octo/other", "layer") in keys
-
-
-def test_pruning_spares_module_summaries_when_a_key_is_unknown(setup: Setup) -> None:
-    layer = setup.build(setup.review(), summarize=lambda path, source: "summary")
-    unknown = replace(layer, modules=[replace(m, cache_key="") for m in layer.modules])
-
-    with closing(connect(setup.db_path)) as conn:
-        prune(conn, "octo/shop", unknown)
-        rows = conn.execute("SELECT cache_key FROM context_cache WHERE cache_key LIKE 'module:%'")
-        assert len(rows.fetchall()) == 2
+        rows = conn.execute("SELECT repo, cache_key FROM context_cache").fetchall()
+    keys = {(row["repo"], row["cache_key"]) for row in rows}
+    layers = [key for repo, key in keys if repo == "octo/shop" and key.startswith("layer:")]
+    assert len(layers) == 2
+    # Summaries are a knowledge base that only grows: a module that is gone or comes
+    # back keeps its summary; only summaries of an older format are dropped.
+    assert ("octo/shop", gone_module) in keys
+    assert ("octo/shop", old_format) not in keys
+    assert ("octo/other", "layer:keep-me") in keys

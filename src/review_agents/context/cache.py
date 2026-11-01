@@ -5,13 +5,12 @@ lets the first build the layer and its summaries while the others wait, then rea
 from the cache instead of building them again.
 """
 
-import json
 import sqlite3
 import threading
 from collections import defaultdict
 from pathlib import Path
 
-from review_agents.context.modules import Summarize
+from review_agents.context.modules import SUMMARY_VERSION, Summarize
 from review_agents.context.repo_layer import RepoLayer, build_repo_layer
 
 _locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
@@ -57,7 +56,7 @@ def repo_layer_for_review(
                 memories,
                 memory_version,
             )
-            prune(conn, repo, layer)
+            prune(conn, repo)
     except Exception as exc:
         _step(conn, review_id, "context.repo_layer", started, f"{type(exc).__name__}: {exc}")
         raise
@@ -76,14 +75,14 @@ def _step(
     )
 
 
-def prune(
-    conn: sqlite3.Connection, repo: str, current: RepoLayer, keep_layers: int = KEEP_LAYERS
-) -> None:
+def prune(conn: sqlite3.Connection, repo: str, keep_layers: int = KEEP_LAYERS) -> None:
     """Drop what no review of `repo` will read again.
 
-    The newest `keep_layers` layers stay, so a review that started on the previous tip of
-    the default branch still finds its layer. Module summaries stay only for the modules
-    of the current tip; a module that changes again is summarised again either way.
+    The newest `keep_layers` layers (conventions and tree, rebuilt from git without the
+    model) stay, so a review that started on the previous tip still finds its layer.
+    Module summaries are a knowledge base that only grows: every summary of the current
+    format is kept, so a module that is removed and comes back, or a change that is
+    reverted, is not summarised again. Only summaries of an older format are dropped.
     """
     conn.execute(
         "DELETE FROM context_cache WHERE repo = ? AND layer = 'repo' AND cache_key LIKE 'layer:%'"
@@ -92,11 +91,8 @@ def prune(
         "   ORDER BY created_at DESC, rowid DESC LIMIT ?)",
         (repo, repo, keep_layers),
     )
-    keep = [m.cache_key for m in current.modules]
-    if not all(keep):  # a summary that does not know its key cannot protect its row
-        return
     conn.execute(
         "DELETE FROM context_cache WHERE repo = ? AND layer = 'repo' AND cache_key LIKE 'module:%'"
-        " AND cache_key NOT IN (SELECT value FROM json_each(?))",
-        (repo, json.dumps(keep)),
+        " AND cache_key NOT LIKE ?",
+        (repo, f"module:{SUMMARY_VERSION}:%"),
     )
