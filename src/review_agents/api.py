@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, closing
 from typing import Annotated, Any, Literal
 
@@ -37,23 +37,31 @@ class ReviewRequest(BaseModel):
     # The CI job's read-only GITHUB_TOKEN; held in memory only, never stored.
     token: str | None = Field(default=None, repr=False)
 
+    # The messages name what is wrong, never the submitted value.
     @field_validator("repo")
     @classmethod
     def _repo(cls, value: str) -> str:
-        return check_repo_name(value)
+        return _quiet(check_repo_name, value, "not an owner/name repository")
 
     @field_validator("base_sha", "head_sha")
     @classmethod
     def _sha(cls, value: str) -> str:
-        return check_commit_sha(value)
+        return _quiet(check_commit_sha, value, "not a full 40-character commit sha")
 
     @field_validator("default_branch")
     @classmethod
     def _branch(cls, value: str) -> str:
         # git never creates a branch starting with "-"; refuse it before it nears a command.
         if value.startswith("-"):
-            raise ValueError(f"not a branch name: {value!r}")
-        return check_branch_name(value)
+            raise ValueError("not a branch name")
+        return _quiet(check_branch_name, value, "not a branch name")
+
+
+def _quiet(check: Callable[[str], str], value: str, reason: str) -> str:
+    try:
+        return check(value)
+    except ValueError:
+        raise ValueError(reason) from None
 
 
 # Whatever the repository's own config later says, a review starts in standard mode;
@@ -154,12 +162,17 @@ def create_app(
             try:
                 # The latest submission is the PR's current head, even an earlier commit
                 # force-pushed back; a stale CI re-run is filtered out by the CI job (#14).
-                row = conn.execute(
-                    "SELECT id, status FROM reviews WHERE repo = ? AND pr = ? AND head_sha = ?"
-                    " AND status IN (?, ?, ?) AND superseded_by IS NULL"
-                    " ORDER BY id DESC LIMIT 1",
-                    (req.repo, req.pr, req.head_sha, *_LIVE),
-                ).fetchone()
+                # A manual `/review` always starts a fresh full review (architecture §7).
+                row = (
+                    None
+                    if req.event == "manual"
+                    else conn.execute(
+                        "SELECT id, status FROM reviews WHERE repo = ? AND pr = ? AND head_sha = ?"
+                        " AND status IN (?, ?, ?) AND superseded_by IS NULL AND event != 'manual'"
+                        " ORDER BY id DESC LIMIT 1",
+                        (req.repo, req.pr, req.head_sha, *_LIVE),
+                    ).fetchone()
+                )
                 if row is None:
                     row = conn.execute(
                         "INSERT INTO reviews (repo, pr, base_sha, head_sha, mode, default_branch,"

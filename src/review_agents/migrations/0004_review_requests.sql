@@ -11,5 +11,11 @@ ALTER TABLE reviews ADD COLUMN has_token INTEGER NOT NULL DEFAULT 0 CHECK (has_t
 -- is then stored as failed and never runs; a running one is stopped by the pipeline
 -- between steps. The API reports both as superseded, with the newer review's id.
 ALTER TABLE reviews ADD COLUMN superseded_by INTEGER REFERENCES reviews (id);
--- A CI job run again for the same commit finds its review instead of starting another.
-CREATE INDEX reviews_by_commit ON reviews (repo, pr, head_sha);
+-- A CI job run again for the same commit finds its review instead of starting another;
+-- the index makes that a hard rule (reliability §4.2). The mode is not part of the key:
+-- it comes from the default branch's config, not from the request (decision D-021).
+-- A manual `/review` asks for a fresh full review of the same commit (architecture §7),
+-- so it is left out.
+CREATE UNIQUE INDEX reviews_live_commit ON reviews (repo, pr, head_sha)
+    WHERE status IN ('queued', 'running', 'done') AND superseded_by IS NULL
+    AND event != 'manual';

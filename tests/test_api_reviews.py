@@ -169,6 +169,9 @@ def test_malformed_requests_are_refused(client: Client, change: dict[str, object
     response = client.request("POST", "/v1/reviews", {**REQUEST, **change})
 
     assert response.status_code == 422
+    for value in change.values():
+        if isinstance(value, str):
+            assert value not in response.text  # what was sent is not echoed back
 
 
 def test_an_oversized_body_is_refused(client: Client) -> None:
@@ -301,3 +304,25 @@ def test_a_head_force_pushed_back_to_an_earlier_commit_is_reviewed_again(
     assert (
         client.request("GET", f"/v1/reviews/{second}").json()["superseded_by"] == back.json()["id"]
     )
+
+
+def test_the_database_allows_one_live_review_per_commit(client: Client) -> None:
+    client.request("POST", "/v1/reviews", REQUEST)
+
+    with closing(connect(client.db_path)) as conn, pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO reviews (repo, pr, base_sha, head_sha, mode, event)"
+            " VALUES ('octo/shop', 7, ?, ?, 'standard', 'synchronize')",
+            ("a" * 40, HEAD),
+        )
+
+
+def test_a_manual_review_request_starts_a_fresh_review_of_the_same_commit(
+    client: Client,
+) -> None:
+    first = client.request("POST", "/v1/reviews", REQUEST).json()["id"]
+
+    manual = client.request("POST", "/v1/reviews", {**REQUEST, "event": "manual"})
+
+    assert manual.status_code == 202
+    assert manual.json()["id"] != first
