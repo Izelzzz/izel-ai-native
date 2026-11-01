@@ -2,6 +2,7 @@ from dataclasses import replace
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from review_agents.context.grouping import signature_tokens
 from review_agents.context.modules import ModuleSummary
 from review_agents.context.pack import (
     AGENT_SHARE,
@@ -14,6 +15,7 @@ from review_agents.context.pack import (
 )
 from review_agents.context.pr_layer import ChangedFile, PrLayer, PrRequest
 from review_agents.context.repo_layer import RepoLayer
+from review_agents.context.tokens import estimate_tokens
 
 SHA = "a" * 40
 
@@ -88,7 +90,7 @@ def test_a_pr_that_fits_is_one_pack_and_a_larger_one_is_split_with_full_intent()
 def pack_overhead(pr: PrLayer) -> int:
     """Window tokens that leave nothing for diffs once the agents' share is kept free."""
     base = ContextPack(SHARED_RULES, repo_layer(), replace(pr, diffs={}))
-    return int(fixed_tokens(base, pr) / (1 - AGENT_SHARE)) + 1
+    return int((fixed_tokens(base) + signature_tokens(pr)) / (1 - AGENT_SHARE)) + 1
 
 
 def test_when_the_shared_context_alone_fills_the_window_each_unit_is_its_own_group() -> None:
@@ -109,3 +111,17 @@ def test_a_file_belongs_to_the_deepest_module_holding_it() -> None:
     assert module_of("payments/gateway/stripe.py") == "payments/gateway"
     assert module_of("payments-old/x.py") == ""
     assert module_of("setup.py") == ""
+
+
+def test_the_room_kept_for_other_groups_signatures_does_not_split_a_pr_that_fits() -> None:
+    # Many changed definitions: their signatures only matter once there are groups.
+    many = "".join(f"+def function_{i}(value):\n" for i in range(80))
+    diffs = {"a.py": patch("a.py", many), "b.py": patch("b.py", "+x = 1\n", size=40)}
+    pr = pr_layer(diffs)
+    base = ContextPack(SHARED_RULES, repo_layer(), replace(pr, diffs={}))
+    changes = sum(estimate_tokens(p) for p in diffs.values())
+    without_signatures = fixed_tokens(base)
+    # Room for every change, but not for the changes plus the signature allowance.
+    window = int((without_signatures + changes + signature_tokens(pr) // 2) / (1 - AGENT_SHARE))
+
+    assert len(build_packs(repo_layer(), pr, window_tokens=window)) == 1

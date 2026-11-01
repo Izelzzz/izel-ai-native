@@ -60,15 +60,14 @@ class ContextPack:
         ]
 
 
-def fixed_tokens(base: ContextPack, layer: PrLayer) -> int:
-    """What every group carries whatever its changes: rules, repository, intent, task."""
+def fixed_tokens(base: ContextPack) -> int:
+    """What the one pack carries whatever its changes: rules, repository, intent, task.
+
+    Split packs carry the definitions other groups change on top of this, at most
+    `signature_tokens`; a pack that is not split has no other groups.
+    """
     longest_task = max(estimate_tokens(task(d)) for d in DIMENSIONS)
-    return (
-        estimate_tokens(base.shared_rules)
-        + estimate_tokens(base.prefix)
-        + signature_tokens(layer)
-        + longest_task
-    )
+    return estimate_tokens(base.shared_rules) + estimate_tokens(base.prefix) + longest_task
 
 
 def module_finder(repo: RepoLayer) -> Callable[[str], str]:
@@ -85,10 +84,17 @@ def module_finder(repo: RepoLayer) -> Callable[[str], str]:
 def build_packs(repo: RepoLayer, layer: PrLayer, window_tokens: int) -> list[ContextPack]:
     """One pack per group of changes; a single pack when the whole PR fits (decision D-008)."""
     base = ContextPack(SHARED_RULES, repo, replace(layer, diffs={}, excerpts=[], notes=[]))
-    room = int(window_tokens * (1 - AGENT_SHARE)) - fixed_tokens(base, layer)
+    budget = int(window_tokens * (1 - AGENT_SHARE)) - fixed_tokens(base)
+    module_of = module_finder(repo)
+    # Only a PR that does not fit is split (D-008), so the room for other groups'
+    # signatures is kept back only once splitting is certain.
+    whole = grouped_layers(layer, module_of, max(budget, 1))
+    if budget >= 1 and len(whole) == 1 and whole[0].group is None:
+        return [ContextPack(SHARED_RULES, repo, layer)]
+    room = budget - signature_tokens(layer)
     if room < 1:
         # Every unit then gets a group of its own, flagged as larger than the window.
         layer = replace(layer, notes=[*layer.notes, NO_ROOM_NOTE])
         room = 1
-    groups = grouped_layers(layer, module_finder(repo), room)
+    groups = grouped_layers(layer, module_of, room)
     return [ContextPack(SHARED_RULES, repo, group) for group in groups]
