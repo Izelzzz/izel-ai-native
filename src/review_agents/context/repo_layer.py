@@ -113,8 +113,13 @@ def directory_tree(snapshot: Snapshot, max_tokens: int = TREE_TOKENS) -> str:
                 name = PurePosixPath(path).name
                 lines.append(f"{'  ' * (level + 1)}{name}/ ({counts[path]} files)")
         if depth is not None:
-            folded = f"deeper than {depth} levels" if depth else f"all {len(counts)}"
-            lines.append(f"(directories {folded} are folded to fit)")
+            hidden = sum(1 for p in counts if p.count("/") >= depth)
+            # Files beneath the folded directories: those under the first hidden level.
+            files = sum(n for p, n in counts.items() if p.count("/") == depth)
+            folded = f"deeper than {depth} levels" if depth else "at every level"
+            lines.append(
+                f"(directories {folded} are folded to fit: {hidden} directories, {files} files)"
+            )
         return "\n".join(lines)
 
     tree = render(None)

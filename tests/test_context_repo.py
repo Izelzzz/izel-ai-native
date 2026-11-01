@@ -303,7 +303,7 @@ def test_a_tree_too_large_is_folded_from_the_deepest_level_and_says_so(repo: Rep
 
     assert "    b0/ (1 files)" in layer.tree
     assert "c/ (1 files)" not in layer.tree
-    assert "deeper than 2 levels are folded" in layer.tree
+    assert "deeper than 2 levels are folded to fit: 40 directories, 40 files" in layer.tree
     assert estimate_tokens(layer.tree) <= 600
 
 
