@@ -17,10 +17,17 @@ def not_implemented(conn: sqlite3.Connection, review_id: int) -> None:
 
 
 def recover_interrupted(conn: sqlite3.Connection) -> int:
-    """Fail reviews left running by a previous process; return how many."""
+    """Fail reviews a previous process left unfinished; return how many.
+
+    Running reviews fail, and so do queued ones that came with a token: the token lived
+    only in that process's memory. Running the CI job again starts a fresh review.
+    """
     cursor = conn.execute(
-        "UPDATE reviews SET status = 'failed', error = 'interrupted by a service restart',"
-        " finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE status = 'running'"
+        "UPDATE reviews SET status = 'failed', error = CASE status"
+        " WHEN 'running' THEN 'interrupted by a service restart'"
+        " ELSE 'its token was lost in a service restart; run the CI job again' END,"
+        " finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+        " WHERE status = 'running' OR (status = 'queued' AND has_token = 1)"
     )
     return cursor.rowcount
 

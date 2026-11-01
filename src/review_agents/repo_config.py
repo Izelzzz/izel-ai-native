@@ -174,20 +174,25 @@ def _describe(error: ErrorDetails) -> str:
     return f"{CONFIG_PATH}: {location}: {message}"
 
 
+def check_branch_name(name: str) -> str:
+    """`name` if git accepts it as a branch, or ValueError."""
+    valid = subprocess.run(  # noqa: S603
+        ["git", "check-ref-format", f"refs/heads/{name}"],  # noqa: S607
+        capture_output=True,
+        check=False,
+    )
+    if valid.returncode != 0:
+        raise ValueError(f"not a branch name: {name!r}")
+    return name
+
+
 def read_repo_config(repo: Path, default_branch: str) -> LoadedConfig:
     """Read the config from the default branch, never from the pull request.
 
     A pull request that changes the config does not change how it is reviewed itself.
     """
     # A full branch ref: a tag, a commit or `HEAD` could point at the pull request's own code.
-    ref = f"refs/heads/{default_branch}"
-    valid = subprocess.run(  # noqa: S603
-        ["git", "check-ref-format", ref],  # noqa: S607
-        capture_output=True,
-        check=False,
-    )
-    if valid.returncode != 0:
-        raise ValueError(f"not a branch name: {default_branch!r}")
+    ref = f"refs/heads/{check_branch_name(default_branch)}"
     result = subprocess.run(  # noqa: S603 - fixed git binary, arguments are not shell-parsed
         ["git", "-C", str(repo), "cat-file", "blob", f"{ref}:{CONFIG_PATH}"],  # noqa: S607
         capture_output=True,
