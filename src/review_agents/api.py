@@ -62,6 +62,25 @@ _START_MODE = "standard"
 _LIVE = ("queued", "running", "done")
 
 
+def _supersede(
+    conn: sqlite3.Connection, repo: str, pr: int, newer: int, tokens: TokenVault
+) -> None:
+    """Mark the PR's unfinished older reviews as superseded by `newer` (decision D-010)."""
+    rows = conn.execute(
+        "UPDATE reviews SET superseded_by = :newer,"
+        " error = CASE status WHEN 'queued' THEN :note ELSE error END,"
+        " finished_at = CASE status WHEN 'queued'"
+        "   THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE finished_at END,"
+        " status = CASE status WHEN 'queued' THEN 'failed' ELSE status END"
+        " WHERE repo = :repo AND pr = :pr AND id != :newer AND superseded_by IS NULL"
+        " AND status IN ('queued', 'running') RETURNING id, status",
+        {"newer": newer, "repo": repo, "pr": pr, "note": f"superseded by review {newer}"},
+    ).fetchall()
+    for row in rows:
+        if row["status"] == "failed":  # was queued: it will never run, so drop its token
+            tokens.discard(int(row["id"]))
+
+
 def create_app(
     settings: Settings,
     handler: ReviewHandler = not_implemented,
@@ -133,9 +152,12 @@ def create_app(
         with closing(connect(settings.db_path, create=False)) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                # The latest submission is the PR's current head, even an earlier commit
+                # force-pushed back; a stale CI re-run is filtered out by the CI job (#14).
                 row = conn.execute(
                     "SELECT id, status FROM reviews WHERE repo = ? AND pr = ? AND head_sha = ?"
-                    " AND status IN (?, ?, ?) ORDER BY id DESC LIMIT 1",
+                    " AND status IN (?, ?, ?) AND superseded_by IS NULL"
+                    " ORDER BY id DESC LIMIT 1",
                     (req.repo, req.pr, req.head_sha, *_LIVE),
                 ).fetchone()
                 if row is None:
@@ -148,6 +170,7 @@ def create_app(
                          req.token is not None),
                     ).fetchone()  # fmt: skip
                     held = int(row["id"])
+                    _supersede(conn, req.repo, req.pr, held, tokens)
                 else:
                     response.status_code = status.HTTP_200_OK
                     # Only a review not yet claimed takes a re-run's fresh token; a running
@@ -175,7 +198,7 @@ def create_app(
         with closing(connect(settings.db_path, create=False)) as conn:
             row = conn.execute(
                 "SELECT id, repo, pr, base_sha, head_sha, round, mode, status, error, limit_hit,"
-                " created_at, started_at, finished_at FROM reviews WHERE id = ?",
+                " superseded_by, created_at, started_at, finished_at FROM reviews WHERE id = ?",
                 (review_id,),
             ).fetchone()
             if row is None:
@@ -187,6 +210,8 @@ def create_app(
                 (review_id,),
             ).fetchall()
         result = dict(row)
+        if row["superseded_by"] is not None:
+            result["status"] = "superseded"
         result["findings"] = [
             {
                 **dict(f),

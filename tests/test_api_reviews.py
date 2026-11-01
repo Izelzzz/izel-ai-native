@@ -264,3 +264,40 @@ def test_a_chunked_body_is_cut_off_at_the_limit(client: Client) -> None:
     response = client.http.post("/v1/reviews", content=chunks())
 
     assert response.status_code == 413
+
+
+def test_a_new_push_supersedes_the_older_reviews_of_the_pull_request(client: Client) -> None:
+    queued = client.request("POST", "/v1/reviews", REQUEST).json()["id"]
+    running = client.request("POST", "/v1/reviews", {**REQUEST, "head_sha": "c" * 40}).json()["id"]
+    with closing(connect(client.db_path)) as conn:
+        conn.execute("UPDATE reviews SET status = 'running' WHERE id = ?", (running,))
+    other_pr = client.request("POST", "/v1/reviews", {**REQUEST, "pr": 8}).json()["id"]
+
+    newest = client.request("POST", "/v1/reviews", {**REQUEST, "head_sha": "d" * 40}).json()["id"]
+
+    # Each review points at the one that replaced it: queued -> running -> newest.
+    for old, by in ((queued, running), (running, newest)):
+        polled = client.request("GET", f"/v1/reviews/{old}").json()
+        assert polled["status"] == "superseded"
+        assert polled["superseded_by"] == by
+    assert client.request("GET", f"/v1/reviews/{other_pr}").json()["status"] == "queued"
+    assert client.request("GET", f"/v1/reviews/{newest}").json()["superseded_by"] is None
+    assert client.vault.get(queued) is None  # it will never run
+    with closing(connect(client.db_path)) as conn:
+        claimable = conn.execute("SELECT id FROM reviews WHERE status = 'queued'").fetchall()
+    assert {row["id"] for row in claimable} == {other_pr, newest}
+
+
+def test_a_head_force_pushed_back_to_an_earlier_commit_is_reviewed_again(
+    client: Client,
+) -> None:
+    first = client.request("POST", "/v1/reviews", REQUEST).json()["id"]
+    second = client.request("POST", "/v1/reviews", {**REQUEST, "head_sha": "c" * 40}).json()["id"]
+
+    back = client.request("POST", "/v1/reviews", REQUEST)
+
+    assert back.status_code == 202
+    assert back.json()["id"] not in (first, second)
+    assert (
+        client.request("GET", f"/v1/reviews/{second}").json()["superseded_by"] == back.json()["id"]
+    )
