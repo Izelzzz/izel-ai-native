@@ -32,6 +32,7 @@ def test_models_secret_and_observability_come_from_the_environment(
     settings = Settings()
 
     assert settings.finder_model is not None and settings.finder_model.api_key is None
+    assert settings.finder_model.context_tokens == 128_000
     assert settings.verifier_model is not None
     assert settings.verifier_model.api_key is not None
     assert settings.verifier_model.api_key.get_secret_value() == "sk-verifier"

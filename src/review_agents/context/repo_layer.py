@@ -13,11 +13,19 @@ from pathlib import Path, PurePosixPath
 
 from review_agents.context.git import Snapshot
 from review_agents.context.markup import untrusted
-from review_agents.context.modules import ModuleSummary, Summarize, module_summaries
+from review_agents.context.modules import (
+    MODULE_TOKENS,
+    ModuleSummary,
+    Summarize,
+    module_summaries,
+)
 from review_agents.context.tokens import estimate_tokens
 
-LAYER_VERSION = "1"
-TREE_DEPTH = 3
+# 2: the directory tree has no depth limit.
+LAYER_VERSION = "2"
+# The tree is folded only past this size, so it cannot crowd out the review's own
+# content; a safety net, not a design limit (decision D-016).
+TREE_TOKENS = 20_000
 # Root files that state how the repository is meant to be written, in reading order.
 CONVENTION_FILES = (
     "CLAUDE.md",
@@ -85,22 +93,46 @@ def convention_paths(snapshot: Snapshot) -> list[str]:
     return root + nested
 
 
-def directory_tree(snapshot: Snapshot, depth: int = TREE_DEPTH) -> str:
-    """Directories down to `depth`, each with the number of files beneath it."""
+def directory_tree(snapshot: Snapshot, max_tokens: int = TREE_TOKENS) -> str:
+    """Every directory, with the number of files beneath it.
+
+    Only a tree larger than `max_tokens` is folded, deepest levels first, and says so.
+    """
     counts: Counter[str] = Counter()
     for entry in snapshot.files():
         parts = PurePosixPath(entry.path).parts[:-1]
-        for level in range(1, min(len(parts), depth) + 1):
+        for level in range(1, len(parts) + 1):
             counts["/".join(parts[:level])] += 1
-    lines = [f"./ ({len(snapshot.files())} files)"]
-    for path in sorted(counts):
-        level = path.count("/")
-        lines.append(f"{'  ' * (level + 1)}{PurePosixPath(path).name}/ ({counts[path]} files)")
-    return "\n".join(lines)
+    header = f"./ ({len(snapshot.files())} files)"
+
+    def render(depth: int | None) -> str:
+        lines = [header]
+        for path in sorted(counts):
+            level = path.count("/")
+            if depth is None or level < depth:
+                name = PurePosixPath(path).name
+                lines.append(f"{'  ' * (level + 1)}{name}/ ({counts[path]} files)")
+        if depth is not None:
+            hidden = sum(1 for p in counts if p.count("/") >= depth)
+            # Files beneath the folded directories: those under the first hidden level.
+            files = sum(n for p, n in counts.items() if p.count("/") == depth)
+            folded = f"deeper than {depth} levels" if depth else "at every level"
+            lines.append(
+                f"(directories {folded} are folded to fit: {hidden} directories, {files} files)"
+            )
+        return "\n".join(lines)
+
+    tree = render(None)
+    deepest = max((p.count("/") + 1 for p in counts), default=0)
+    depth = deepest - 1
+    while estimate_tokens(tree) > max_tokens and depth >= 0:
+        tree = render(depth)
+        depth -= 1
+    return tree
 
 
-def _key(snapshot: Snapshot, memory_version: str) -> str:
-    raw = f"{LAYER_VERSION}:{snapshot.tree_id}:{memory_version}"
+def _key(snapshot: Snapshot, memory_version: str, tree_tokens: int) -> str:
+    raw = f"{LAYER_VERSION}:{snapshot.tree_id}:{memory_version}:{tree_tokens}"
     return "layer:" + hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -113,6 +145,8 @@ def build_repo_layer(
     summarize: Summarize | None = None,
     memories: list[str] | None = None,
     memory_version: str = "",
+    module_tokens: int = MODULE_TOKENS,
+    tree_tokens: int = TREE_TOKENS,
 ) -> RepoLayer:
     """The repository layer at the tip of the default branch.
 
@@ -122,7 +156,7 @@ def build_repo_layer(
     `summarize=None` to use only the summaries that already exist.
     """
     snapshot = Snapshot.at_branch(git_dir, default_branch, tuple(skip_paths))
-    key = _key(snapshot, memory_version)
+    key = _key(snapshot, memory_version, tree_tokens)
     row = conn.execute(
         "SELECT content FROM context_cache WHERE repo = ? AND layer = 'repo' AND cache_key = ?",
         (repo, key),
@@ -137,7 +171,7 @@ def build_repo_layer(
             text = snapshot.read_text(path)
             if text is not None:
                 conventions.append((path, text))
-        tree = directory_tree(snapshot)
+        tree = directory_tree(snapshot, tree_tokens)
         content = json.dumps({"conventions": conventions, "tree": tree})
         conn.execute(
             "INSERT OR REPLACE INTO context_cache (repo, layer, cache_key, content, tokens)"
@@ -148,7 +182,7 @@ def build_repo_layer(
         commit=snapshot.commit,
         conventions=conventions,
         tree=tree,
-        modules=module_summaries(conn, repo, snapshot, summarize),
+        modules=module_summaries(conn, repo, snapshot, summarize, module_tokens),
         memories=memories or [],
         cache_hit=row is not None,
     )

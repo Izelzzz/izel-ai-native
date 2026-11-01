@@ -14,6 +14,8 @@ class ModelEndpoint(BaseModel):
     model: str = Field(min_length=1)
     # Local model servers often need no key.
     api_key: SecretStr | None = None
+    # The model's context window, which sizes what one request may hold.
+    context_tokens: int = Field(default=128_000, ge=8_000)
 
 
 class Observability(BaseModel):

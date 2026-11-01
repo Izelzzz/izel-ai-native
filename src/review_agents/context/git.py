@@ -26,6 +26,7 @@ class Snapshot:
         self.commit = check_commit_sha(commit)
         self._skip_paths = skip_paths
         self._files: list[Entry] | None = None
+        self._by_path: dict[str, Entry] = {}
 
     @classmethod
     def at_branch(cls, git_dir: Path, branch: str, skip_paths: tuple[str, ...]) -> "Snapshot":
@@ -59,11 +60,13 @@ class Snapshot:
                 if kind == "blob" and not self.is_skipped(path):
                     files.append(Entry(path, object_id, int(size)))
             self._files = files
+            self._by_path = {f.path: f for f in files}
         return self._files
 
     def read_text(self, path: str) -> str | None:
         """A text file's content, or None when it is missing, skipped, too large or binary."""
-        entry = next((f for f in self.files() if f.path == path), None)
+        self.files()
+        entry = self._by_path.get(path)
         if entry is None or entry.size > MAX_FILE_BYTES:
             return None
         try:

@@ -3,7 +3,7 @@ import time
 import pytest
 
 from review_agents.context import tokens
-from review_agents.context.tokens import estimate_tokens, head_tokens
+from review_agents.context.tokens import estimate_tokens
 
 
 def test_tokens_are_counted_with_a_real_tokenizer() -> None:
@@ -51,13 +51,3 @@ def test_a_failed_load_is_retried_later_not_given_up_for_good(
         assert len(calls) == 2
     finally:
         tokens._encoding.cache_clear()
-
-
-def test_head_tokens_keeps_at_most_that_many_tokens() -> None:
-    text = "def refund(order, cents):\n    return min(cents, order.paid)\n" * 50
-
-    head = head_tokens(text, 100)
-
-    assert text.startswith(head)
-    assert 90 <= estimate_tokens(head) <= 100
-    assert head_tokens("short", 100) == "short"
